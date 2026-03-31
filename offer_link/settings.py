@@ -1,9 +1,13 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# ✅ Explicitly load .env from project root (same folder as manage.py)
+load_dotenv(BASE_DIR / '.env')
 
 # ─── Security ─────────────────────────────────────────────────────────────────
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-your-secret-key-here-change-in-production')
@@ -68,12 +72,12 @@ WSGI_APPLICATION = 'offer_link.wsgi.application'
 # ─── Database ─────────────────────────────────────────────────────────────────
 DATABASES = {
     'default': {
-        'ENGINE'  : 'django.db.backends.postgresql',
-        'NAME'    : 'vsaver_db',
-        'USER'    : 'postgres',
-        'PASSWORD': 'info@imc',
-        'HOST'    : '88.222.212.14',
-        'PORT'    : '5432',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.environ.get('DB_NAME'),
+        'USER': os.environ.get('DB_USER'),
+        'PASSWORD': os.environ.get('DB_PASSWORD'),
+        'HOST': os.environ.get('DB_HOST'),
+        'PORT': os.environ.get('DB_PORT'),
     }
 }
 
