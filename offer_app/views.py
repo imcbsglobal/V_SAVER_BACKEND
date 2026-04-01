@@ -1165,38 +1165,64 @@ def _require_admin(user):
 def acc_master_list(request):
     """
     GET /api/acc-master/
-    Admin only. List all customers/debtors from the accounting system.
+    Admin  → sees ALL customers scoped to their client_id, with search/pagination.
+    User   → sees ONLY their own AccMaster record, looked up via phone number.
 
-    Query params:
+    Query params (admin only):
       ?search=<text>       — filter by name, code, phone2, or place
       ?limit=<n>           — page size (default 50, max 200)
       ?offset=<n>          — pagination offset (default 0)
     """
-    if _require_admin(request.user):
-        return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
+    user = request.user
 
-    admin_client_id = getattr(request.user, 'client_id', '') or ''
-    qs = AccMaster.objects.filter(client_id=admin_client_id).order_by('code')
+    # ── ADMIN PATH ────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        admin_client_id = getattr(user, 'client_id', '') or ''
+        qs = AccMaster.objects.filter(client_id=admin_client_id).order_by('code')
 
-    search = request.query_params.get('search', '').strip()
-    if search:
-        qs = qs.filter(
-            Q(name__icontains=search)   |
-            Q(code__icontains=search)   |
-            Q(phone2__icontains=search) |
-            Q(place__icontains=search)
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search)   |
+                Q(code__icontains=search)   |
+                Q(phone2__icontains=search) |
+                Q(place__icontains=search)
+            )
+
+        total  = qs.count()
+        limit  = min(int(request.query_params.get('limit',  50)), 200)
+        offset = int(request.query_params.get('offset', 0))
+        qs     = qs[offset: offset + limit]
+
+        return Response({
+            'total':   total,
+            'limit':   limit,
+            'offset':  offset,
+            'results': AccMasterSerializer(qs, many=True).data,
+        })
+
+    # ── REGULAR USER PATH ─────────────────────────────────────────
+    # Return only the single AccMaster record matching their phone number
+    phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+    if len(phone) > 10:
+        phone = phone[-10:]
+
+    if not phone:
+        return Response(
+            {'error': 'No phone number linked to your account. Please contact admin.'},
+            status=status.HTTP_400_BAD_REQUEST
         )
 
-    total  = qs.count()
-    limit  = min(int(request.query_params.get('limit',  50)), 200)
-    offset = int(request.query_params.get('offset', 0))
-    qs     = qs[offset: offset + limit]
+    record = AccMaster.objects.filter(phone2__endswith=phone).first()
+    if not record:
+        return Response(
+            {'error': 'No customer account found for your phone number. Please contact admin.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
     return Response({
-        'total':   total,
-        'limit':   limit,
-        'offset':  offset,
-        'results': AccMasterSerializer(qs, many=True).data,
+        'total':   1,
+        'results': AccMasterSerializer([record], many=True).data,
     })
 
 
@@ -1205,34 +1231,63 @@ def acc_master_list(request):
 def acc_master_detail(request, pk):
     """
     GET /api/acc-master/<id>/
-    Admin only. Single customer record + their last 50 invoices.
+    Admin  → any customer record by pk, scoped to client_id, + last 50 invoices.
+    User   → only their own record (pk must match their phone-resolved AccMaster id).
     """
-    if _require_admin(request.user):
-        return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
+    user = request.user
 
-    try:
-        admin_client_id = getattr(request.user, 'client_id', '') or ''
-        obj = AccMaster.objects.get(pk=pk, client_id=admin_client_id)
-    except AccMaster.DoesNotExist:
-        return Response({'error': 'Customer not found.'}, status=status.HTTP_404_NOT_FOUND)
+    # ── ADMIN PATH ────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        admin_client_id = getattr(user, 'client_id', '') or ''
+        try:
+            obj = AccMaster.objects.get(pk=pk, client_id=admin_client_id)
+        except AccMaster.DoesNotExist:
+            return Response({'error': 'Customer not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-    invoices = AccInvMast.objects.filter(
-        customerid=obj.code, client_id=admin_client_id
-    ).order_by('-slno').values('slno', 'invdate', 'nettotal')[:50]
+        invoices = AccInvMast.objects.filter(
+            customerid=obj.code, client_id=admin_client_id
+        ).order_by('-slno').values('slno', 'invdate', 'nettotal')[:50]
 
-    invoice_data = [
-        {
-            'slno':     inv['slno'],
-            'invdate':  str(inv['invdate']) if inv['invdate'] else None,
-            'nettotal': str(inv['nettotal']) if inv['nettotal'] else '0',
-        }
-        for inv in invoices
-    ]
+        invoice_data = [
+            {
+                'slno':     inv['slno'],
+                'invdate':  str(inv['invdate']) if inv['invdate'] else None,
+                'nettotal': str(inv['nettotal']) if inv['nettotal'] else '0',
+            }
+            for inv in invoices
+        ]
 
-    data = AccMasterSerializer(obj).data
-    data['invoices']      = invoice_data
-    data['invoice_count'] = len(invoice_data)
-    return Response(data)
+        data = AccMasterSerializer(obj).data
+        data['invoices']      = invoice_data
+        data['invoice_count'] = len(invoice_data)
+        return Response(data)
+
+    # ── REGULAR USER PATH ─────────────────────────────────────────
+    phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+    if len(phone) > 10:
+        phone = phone[-10:]
+
+    if not phone:
+        return Response(
+            {'error': 'No phone number linked to your account.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    record = AccMaster.objects.filter(phone2__endswith=phone).first()
+    if not record:
+        return Response(
+            {'error': 'No customer account found for your phone number.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # Ensure the requested pk actually belongs to this user
+    if record.pk != pk:
+        return Response(
+            {'error': 'You do not have permission to view this record.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    return Response(AccMasterSerializer(record).data)
 
 
 # -------------------- Misel (Shops) ---------------------
@@ -1301,24 +1356,75 @@ def misel_detail(request, pk):
 def acc_inv_mast_list(request):
     """
     GET /api/invoices/
-    Admin only. List all invoices.
+    Admin  → sees ALL invoices scoped to their client_id.
+    User   → sees only their own invoices, looked up via phone → AccMaster → customerid.
 
     Query params:
-      ?customerid=<code>    — filter by customer code
+      ?customerid=<code>    — (admin only) filter by customer code
       ?date_from=YYYY-MM-DD — filter from date
       ?date_to=YYYY-MM-DD   — filter to date
       ?search=<text>        — filter by customerid or slno
-      ?limit=<n>            — page size (default 50, max 200)
+      ?limit=<n>            — page size (default 50, max 200 for admin / 50 for user)
       ?offset=<n>           — pagination offset
     """
-    if _require_admin(request.user):
-        return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
+    user = request.user
 
-    admin_client_id = getattr(request.user, 'client_id', '') or ''
-    qs = AccInvMast.objects.filter(client_id=admin_client_id).order_by('-invdate', '-slno')
+    # ── ADMIN PATH ────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        admin_client_id = getattr(user, 'client_id', '') or ''
+        qs = AccInvMast.objects.filter(client_id=admin_client_id).order_by('-invdate', '-slno')
 
-    if request.query_params.get('customerid'):
-        qs = qs.filter(customerid=request.query_params['customerid'].strip())
+        if request.query_params.get('customerid'):
+            qs = qs.filter(customerid=request.query_params['customerid'].strip())
+
+        if request.query_params.get('date_from'):
+            qs = qs.filter(invdate__gte=request.query_params['date_from'])
+
+        if request.query_params.get('date_to'):
+            qs = qs.filter(invdate__lte=request.query_params['date_to'])
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(customerid__icontains=search) |
+                Q(slno__icontains=search)
+            )
+
+        total  = qs.count()
+        limit  = min(int(request.query_params.get('limit',  50)), 200)
+        offset = int(request.query_params.get('offset', 0))
+        qs     = qs[offset: offset + limit]
+
+        return Response({
+            'total':   total,
+            'limit':   limit,
+            'offset':  offset,
+            'results': AccInvMastSerializer(qs, many=True).data,
+        })
+
+    # ── REGULAR USER PATH ─────────────────────────────────────────
+    # Resolve customer code from phone number via AccMaster
+    phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+    if len(phone) > 10:
+        phone = phone[-10:]
+
+    if not phone:
+        return Response(
+            {'error': 'No phone number linked to your account. Please contact admin.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    record = AccMaster.objects.filter(phone2__endswith=phone).first()
+    if not record:
+        return Response(
+            {'error': 'No customer account found for your phone number. Please contact admin.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    qs = AccInvMast.objects.filter(
+        customerid=record.code,
+        client_id=record.client_id,
+    ).order_by('-invdate', '-slno')
 
     if request.query_params.get('date_from'):
         qs = qs.filter(invdate__gte=request.query_params['date_from'])
@@ -1326,23 +1432,18 @@ def acc_inv_mast_list(request):
     if request.query_params.get('date_to'):
         qs = qs.filter(invdate__lte=request.query_params['date_to'])
 
-    search = request.query_params.get('search', '').strip()
-    if search:
-        qs = qs.filter(
-            Q(customerid__icontains=search) |
-            Q(slno__icontains=search)
-        )
-
     total  = qs.count()
-    limit  = min(int(request.query_params.get('limit',  50)), 200)
+    limit  = min(int(request.query_params.get('limit', 20)), 50)
     offset = int(request.query_params.get('offset', 0))
     qs     = qs[offset: offset + limit]
 
     return Response({
-        'total':   total,
-        'limit':   limit,
-        'offset':  offset,
-        'results': AccInvMastSerializer(qs, many=True).data,
+        'total':        total,
+        'limit':        limit,
+        'offset':       offset,
+        'customerid':   record.code,
+        'customer_name': record.name,
+        'results':      AccInvMastSerializer(qs, many=True).data,
     })
 
 
@@ -1351,22 +1452,54 @@ def acc_inv_mast_list(request):
 def acc_inv_mast_detail(request, pk):
     """
     GET /api/invoices/<id>/
-    Admin only. Single invoice + the matching customer name.
+    Admin  → can fetch any invoice scoped to their client_id, includes customer name/place.
+    User   → can only fetch their own invoice (matched via phone → AccMaster → customerid).
     """
-    if _require_admin(request.user):
-        return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
+    user = request.user
+
+    # ── ADMIN PATH ────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        admin_client_id = getattr(user, 'client_id', '') or ''
+        try:
+            obj = AccInvMast.objects.get(pk=pk, client_id=admin_client_id)
+        except AccInvMast.DoesNotExist:
+            return Response({'error': 'Invoice not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        customer = AccMaster.objects.filter(code=obj.customerid, client_id=admin_client_id).first()
+        data = AccInvMastSerializer(obj).data
+        data['customer_name']  = customer.name  if customer else None
+        data['customer_place'] = customer.place if customer else None
+        return Response(data)
+
+    # ── REGULAR USER PATH ─────────────────────────────────────────
+    phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+    if len(phone) > 10:
+        phone = phone[-10:]
+
+    if not phone:
+        return Response(
+            {'error': 'No phone number linked to your account.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    record = AccMaster.objects.filter(phone2__endswith=phone).first()
+    if not record:
+        return Response(
+            {'error': 'No customer account found for your phone number.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
     try:
-        admin_client_id = getattr(request.user, 'client_id', '') or ''
-        obj = AccInvMast.objects.get(pk=pk, client_id=admin_client_id)
+        obj = AccInvMast.objects.get(pk=pk, customerid=record.code, client_id=record.client_id)
     except AccInvMast.DoesNotExist:
-        return Response({'error': 'Invoice not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-    customer = AccMaster.objects.filter(code=obj.customerid, client_id=admin_client_id).first()
+        return Response(
+            {'error': 'Invoice not found or does not belong to your account.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
     data = AccInvMastSerializer(obj).data
-    data['customer_name']  = customer.name  if customer else None
-    data['customer_place'] = customer.place if customer else None
+    data['customer_name']  = record.name
+    data['customer_place'] = record.place
     return Response(data)
 
 

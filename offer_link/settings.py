@@ -103,13 +103,23 @@ TIME_ZONE = 'Asia/Kolkata'   # ✅ FIXED: was 'UTC' — caused hourly offer time
 USE_I18N = True
 USE_TZ = True                # ✅ Keep True — Django stores UTC in DB, converts to IST for display
 
+
+CORS_ALLOWED_ORIGINS = [
+    "http://192.168.1.45:5173",   # your local dev
+    "https://yourfrontenddomain.com",  # your deployed frontend
+]
+
+
 # Static files
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Media files
+# Replace this:
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+
+# With this:
+MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
