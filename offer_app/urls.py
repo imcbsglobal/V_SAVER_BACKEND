@@ -81,5 +81,9 @@ path('invoices/', views.acc_inv_mast_list, name='invoice-list'),
 path('invoices/<int:pk>/', views.acc_inv_mast_detail, name='invoice-detail'),
 
 path('acc-master/', views.acc_master_list, name='acc-master-list'),
-path('acc-master/<int:pk>/', views.acc_master_detail, name='acc-master-detail'),
+path('acc-master/<int:pk>/', views.acc_master_detail, name='acc-master-detail'),     
+
+# ---------- BRANCHES (Invoice-style) ----------
+path('branches/', views.branch_list, name='branch-list'),
+path('branches/<uuid:pk>/', views.branch_detail, name='branch-detail'),
 ]

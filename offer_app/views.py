@@ -1547,4 +1547,123 @@ def my_points(request):
 
     return Response({
         'points': raw.strip() if raw else '0',
+    }) 
+# -------------------- BranchMaster (Invoice-style List & Detail) --------------------
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def branch_list(request):
+    """
+    GET /api/branches/
+    Admin  → sees ALL branches from all users.
+    User   → sees only their own branches.
+
+    Query params:
+      ?search=<text>    — filter by branch_name or branch_code
+      ?status=active    — filter by status (active | inactive)
+      ?city=<text>      — filter by city
+      ?limit=<n>        — page size (default 20, max 200 for admin / 50 for user)
+      ?offset=<n>       — pagination offset
+    """
+    user = request.user
+
+    # ── ADMIN PATH ────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        qs = BranchMaster.objects.all().select_related('user').order_by('-created_at')
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(branch_name__icontains=search) |
+                Q(branch_code__icontains=search) |
+                Q(location__icontains=search)
+            )
+
+        if request.query_params.get('status'):
+            qs = qs.filter(status=request.query_params['status'].strip())
+
+        if request.query_params.get('city'):
+            qs = qs.filter(city__icontains=request.query_params['city'].strip())
+
+        total  = qs.count()
+        limit  = min(int(request.query_params.get('limit', 20)), 200)
+        offset = int(request.query_params.get('offset', 0))
+        qs     = qs[offset: offset + limit]
+
+        return Response({
+            'total':   total,
+            'limit':   limit,
+            'offset':  offset,
+            'results': BranchMasterSerializer(qs, many=True, context={'request': request}).data,
+        })
+
+    # ── REGULAR USER PATH ─────────────────────────────────────────
+  # ── REGULAR USER PATH ─────────────────────────────────────────
+    # Users can see ALL active branches (read-only, 4 fields only)
+    qs = BranchMaster.objects.filter(status='active').order_by('-created_at')
+
+    search = request.query_params.get('search', '').strip()
+    if search:
+        qs = qs.filter(
+            Q(branch_name__icontains=search) |
+            Q(branch_code__icontains=search) |
+            Q(location__icontains=search)
+        )
+
+    if request.query_params.get('city'):
+        qs = qs.filter(city__icontains=request.query_params['city'].strip())
+
+    total  = qs.count()
+    limit  = min(int(request.query_params.get('limit', 20)), 50)
+    offset = int(request.query_params.get('offset', 0))
+    qs     = qs[offset: offset + limit]
+
+    results = [
+        {
+            'branch_name': b.branch_name,
+            'branch_code': b.branch_code,
+            'location':    b.location,
+            'address':     b.address,
+        }
+        for b in qs
+    ]
+
+    return Response({
+        'total':   total,
+        'limit':   limit,
+        'offset':  offset,
+        'results': results,
     })
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def branch_detail(request, pk):
+    """
+    GET /api/branches/<uuid>/
+    Admin  → can fetch any branch; response includes owner info.
+    User   → can only fetch their own branch (returns 404 for others).
+    """
+    user = request.user
+
+    # ── ADMIN PATH ────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        try:
+            branch = BranchMaster.objects.select_related('user').get(pk=pk)
+        except BranchMaster.DoesNotExist:
+            return Response({'error': 'Branch not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        data = BranchMasterSerializer(branch, context={'request': request}).data
+        data['owner_name']  = branch.user.shop_name or branch.user.username
+        data['owner_email'] = branch.user.email
+        return Response(data)
+
+    # ── REGULAR USER PATH ─────────────────────────────────────────
+    try:
+        branch = BranchMaster.objects.get(pk=pk, user=user)
+    except BranchMaster.DoesNotExist:
+        return Response(
+            {'error': 'Branch not found or does not belong to your account.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    return Response(BranchMasterSerializer(branch, context={'request': request}).data)

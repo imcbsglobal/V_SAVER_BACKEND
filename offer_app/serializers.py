@@ -371,12 +371,13 @@ class OfferMasterMediaSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         if obj.file:
+            url = obj.file.url
+            if url.startswith('http://') or url.startswith('https://'):
+                return url
             request = self.context.get('request')
             if request:
-                return request.build_absolute_uri(obj.file.url)
-            return obj.file.url
-        return None
-
+                return request.build_absolute_uri(url)
+            return url
 
 # ---------------- OFFER MASTER SERIALIZERS ----------------
 

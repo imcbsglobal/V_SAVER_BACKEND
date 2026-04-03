@@ -14,11 +14,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-your-secret-key-here-
 
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.environ.get(
-    'ALLOWED_HOSTS',
-    '127.0.0.1,localhost,192.168.1.45'
-).split(',')
-
+ALLOWED_HOSTS = ["*"]
 
 # Application definition
 INSTALLED_APPS = [
@@ -36,6 +32,7 @@ INSTALLED_APPS = [
 
     # Local apps
     'offer_app',
+    'storages',
 ]
 
 MIDDLEWARE = [
@@ -99,27 +96,13 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Internationalization
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'Asia/Kolkata'   # ✅ FIXED: was 'UTC' — caused hourly offer time mismatch
+TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
-USE_TZ = True                # ✅ Keep True — Django stores UTC in DB, converts to IST for display
-
-
-CORS_ALLOWED_ORIGINS = [
-    "http://192.168.1.45:5173",   # your local dev
-    "https://yourfrontenddomain.com",  # your deployed frontend
-]
-
+USE_TZ = True
 
 # Static files
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-
-# Media files
-# Replace this:
-MEDIA_URL = '/media/'
-
-# With this:
-MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -182,11 +165,7 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10MB
 SITE_URL     = os.environ.get('SITE_URL',     'http://192.168.1.45:8000')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://192.168.1.45:5173')
 
-# ─── Cache (used for WhatsApp OTP storage) ───────────────────────────────────
-# Uses local memory by default — works for single server deployments.
-# Switch to Redis in .env if you scale to multiple servers:
-#   CACHE_BACKEND=django.core.cache.backends.redis.RedisCache
-#   CACHE_LOCATION=redis://127.0.0.1:6379/1
+# ─── Cache ────────────────────────────────────────────────────────────────────
 CACHES = {
     'default': {
         'BACKEND':  os.environ.get('CACHE_BACKEND',  'django.core.cache.backends.locmem.LocMemCache'),
@@ -215,3 +194,30 @@ LOGGING = {
         },
     },
 }
+
+# ─── Cloudflare R2 Storage ────────────────────────────────────────────────────
+STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+AWS_ACCESS_KEY_ID       = os.environ.get('CLOUDFLARE_R2_ACCESS_KEY')
+AWS_SECRET_ACCESS_KEY   = os.environ.get('CLOUDFLARE_R2_SECRET_KEY')
+AWS_STORAGE_BUCKET_NAME = os.environ.get('CLOUDFLARE_R2_BUCKET')
+AWS_S3_ENDPOINT_URL     = os.environ.get('CLOUDFLARE_R2_BUCKET_ENDPOINT')
+
+AWS_S3_ADDRESSING_STYLE = "path"
+AWS_QUERYSTRING_AUTH    = False
+AWS_DEFAULT_ACL         = None   # R2 does NOT support ACLs
+AWS_S3_FILE_OVERWRITE   = False  # Prevents overwriting files with same name
+AWS_LOCATION            = ''     # ✅ FIXED: empty string so upload_to paths are respected as-is
+
+_r2_public = os.environ.get('CLOUDFLARE_R2_PUBLIC_URL', '').rstrip('/')
+AWS_S3_CUSTOM_DOMAIN = _r2_public.replace("https://", "").replace("http://", "")
+
+# ✅ FIXED: only one MEDIA_URL — the R2 public URL (removed the conflicting /media/ line above)
+MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
