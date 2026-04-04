@@ -361,3 +361,49 @@ class AccInvMast(models.Model):
 
     def __str__(self):
         return f"Invoice {self.slno} | {self.customerid} | {self.client_id}"
+
+
+# ---------- File Deletion Signals ----------
+from django.db.models.signals import post_delete, pre_save
+from django.dispatch import receiver
+
+@receiver(post_delete)
+def auto_delete_file_on_delete(sender, instance, **kwargs):
+    """
+    Deletes files from storage when corresponding model object is deleted.
+    """
+    if not hasattr(sender, '_meta') or sender._meta.app_label != 'offer_app':
+        return
+    for field in sender._meta.get_fields():
+        if isinstance(field, models.FileField):
+            file = getattr(instance, field.name, None)
+            if file and file.name:
+                try:
+                    file.delete(save=False)
+                except Exception:
+                    pass
+
+@receiver(pre_save)
+def auto_delete_file_on_change(sender, instance, **kwargs):
+    """
+    Deletes old file from storage when corresponding file field is updated.
+    """
+    if not hasattr(sender, '_meta') or sender._meta.app_label != 'offer_app':
+        return
+    if not instance.pk:
+        return
+    
+    try:
+        old_instance = sender.objects.get(pk=instance.pk)
+    except sender.DoesNotExist:
+        return
+
+    for field in sender._meta.get_fields():
+        if isinstance(field, models.FileField):
+            old_file = getattr(old_instance, field.name, None)
+            new_file = getattr(instance, field.name, None)
+            if old_file and old_file.name and old_file != new_file:
+                try:
+                    old_file.delete(save=False)
+                except Exception:
+                    pass
