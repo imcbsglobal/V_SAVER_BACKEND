@@ -144,6 +144,22 @@ def _find_debtor_by_phone(phone_number):
     return None
 
 
+def _find_branch_by_client_id(client_id):
+    """
+    Look up the shop/branch info from Misel table using client_id.
+    Returns dict with branch_name and branch_address, or None.
+    """
+    if not client_id:
+        return None
+    record = Misel.objects.filter(client_id=client_id).first()
+    if record:
+        return {
+            "branch_name":    record.firm_name or "",
+            "branch_address": record.address1 or "",
+        }
+    return None
+
+
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
 def user_login(request):
@@ -359,15 +375,29 @@ def user_verify_otp(request):
     if _block_if_disabled(user):
         return Response({"error": "Your account is disabled. Please contact admin."}, status=403)
 
+    # Resolve client_id: prefer stored on user, fall back to debtor lookup
+    client_id = (getattr(user, 'client_id', '') or '').strip()
+    if not client_id:
+        debtor_fresh = _find_debtor_by_phone(phone_number)
+        client_id = (debtor_fresh.get('client_id') or '') if debtor_fresh else ''
+
+    # Look up branch/shop name from Misel table via client_id
+    branch_info    = _find_branch_by_client_id(client_id)
+    branch_name    = branch_info.get('branch_name', '')    if branch_info else ''
+    branch_address = branch_info.get('branch_address', '') if branch_info else ''
+
     refresh = RefreshToken.for_user(user)
     return Response({
         "access":  str(refresh.access_token),
         "refresh": str(refresh),
         "user": {
             **UserPublicSerializer(user).data,
-            "debtor_code": debtor_code,
-            "debtor_name": debtor_name,
-            "place":       place,
+            "debtor_code":    debtor_code,
+            "debtor_name":    debtor_name,
+            "place":          place,
+            "client_id":      client_id,
+            "branch_name":    branch_name,
+            "branch_address": branch_address,
         }
     })
 
@@ -811,12 +841,23 @@ class TemplateListView(APIView):
 @permission_classes([permissions.IsAuthenticated])
 def user_dashboard_stats(request):
     user = request.user
+
+    # Resolve branch info from Misel table using user's client_id
+    client_id      = (getattr(user, 'client_id', '') or '').strip()
+    branch_info    = _find_branch_by_client_id(client_id)
+    branch_name    = branch_info.get('branch_name', '')    if branch_info else ''
+    branch_address = branch_info.get('branch_address', '') if branch_info else ''
+
     return Response({
         "total_categories":     Category.objects.count(),
         "total_products":       Product.objects.filter(user=user).count(),
         "active_offers":        Product.objects.filter(user=user, is_active=True).count(),
         "total_offer_masters":  OfferMaster.objects.filter(user=user).count(),
         "active_offer_masters": OfferMaster.objects.filter(user=user, status='active').count(),
+        # Branch / shop identity
+        "client_id":      client_id,
+        "branch_name":    branch_name,
+        "branch_address": branch_address,
     })
 
 
