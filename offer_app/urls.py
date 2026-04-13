@@ -5,9 +5,15 @@ from .views import public_branch_offers
 urlpatterns = [
     # ---------- AUTH ----------
     path('admin/login/', views.admin_login, name='admin-login'),
-    # path('user/login/', views.user_login, name='user-login'),
+
+    # Customer LOGIN (AccMaster or previously signed-up users)
     path('user/request-otp/', views.user_request_otp, name='user-request-otp'),
     path('user/verify-otp/', views.user_verify_otp, name='user-verify-otp'),
+
+    # Customer SIGN-UP (brand-new users not in AccMaster)
+    path('user/request-otp-signup/', views.user_request_otp_signup, name='user-request-otp-signup'),
+    path('user/verify-otp-signup/', views.user_verify_otp_signup, name='user-verify-otp-signup'),
+
     path('register/', views.register_user, name='register-user'),
 
     # ---------- CATEGORY ----------
@@ -64,26 +70,26 @@ urlpatterns = [
     # ---------- USER INVOICES ----------
     path('invoices/my/', views.user_invoices, name='user-invoices'),
 
-    # ---------- ADMIN  ----------
+    # ---------- ADMIN ----------
     path('admins/stats/', views.AdminStatsView.as_view(), name='admin-stats'),
     path('admins/', views.AdminListView.as_view(), name='admin-list'),
     path('admins/<int:pk>/', views.AdminDetailView.as_view(), name='admin-detail'),
 
-   path('misel/', views.misel_list, name='misel-list'),
-   path('misel/<int:pk>/', views.misel_detail, name='misel-detail'), 
+    path('misel/', views.misel_list, name='misel-list'),
+    path('misel/<int:pk>/', views.misel_detail, name='misel-detail'),
 
+    # ---------- INVOICES (Admin) ----------
+    path('invoices/', views.acc_inv_mast_list, name='invoice-list'),
+    path('invoices/<int:pk>/', views.acc_inv_mast_detail, name='invoice-detail'),
 
+    path('acc-master/', views.acc_master_list, name='acc-master-list'),
+    path('acc-master/<int:pk>/', views.acc_master_detail, name='acc-master-detail'),
 
+    # ---------- BRANCHES (Invoice-style) ----------
+    path('branches/', views.branch_list, name='branch-list'),
+    path('branches/<uuid:pk>/', views.branch_detail, name='branch-detail'),
 
-# apiurl
-# ---------- INVOICES (Admin) ----------
-path('invoices/', views.acc_inv_mast_list, name='invoice-list'),
-path('invoices/<int:pk>/', views.acc_inv_mast_detail, name='invoice-detail'),
-
-path('acc-master/', views.acc_master_list, name='acc-master-list'),
-path('acc-master/<int:pk>/', views.acc_master_detail, name='acc-master-detail'),     
-
-# ---------- BRANCHES (Invoice-style) ----------
-path('branches/', views.branch_list, name='branch-list'),
-path('branches/<uuid:pk>/', views.branch_detail, name='branch-detail'),
+    # ---------- PUSH NOTIFICATIONS ----------
+    path('push/register-token/',    views.register_push_token,    name='register-push-token'),
+    path('push/send-notification/', views.send_push_notification, name='send-push-notification'),
 ]

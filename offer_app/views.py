@@ -14,7 +14,7 @@ import requests as http_requests
 from django.core.cache import cache
 
 from .models import User, Category, Product, Offer, OfferMaster, OfferMasterMedia, BranchMaster
-from .models import AccMaster, Misel, AccInvMast   # ✅ Sync models
+from .models import AccMaster, Misel, AccInvMast
 from .serializers import (
     UserSerializer,
     UserPublicSerializer,
@@ -92,7 +92,6 @@ def admin_login(request):
     if not client_id:
         return Response({"error": "Client ID is required."}, status=400)
 
-    # ✅ Validate client_id against AccMaster (single DB)
     client_exists = AccMaster.objects.filter(client_id=client_id).exists()
     if not client_exists:
         return Response({"error": "Invalid Client ID. Please check and try again."}, status=400)
@@ -121,34 +120,28 @@ def admin_login(request):
 
 
 # ─── WhatsApp OTP (AiSensy) ───────────────────────────────────────────────────
-AISENSY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY0ZDM2ZTZiNzNjM2NmMjIwNmE4MjA2OCIsIm5hbWUiOiJjaGF0aWNvIGFsZXJ0IiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY0ZDM2ZTZhNzNjM2NmMjIwNmE4MjA2MyIsImFjdGl2ZVBsYW4iOiJCQVNJQ19NT05USExZIiwiaWF0IjoxNzYyMTUyODUyfQ.Rl0OfVFNGiUd8vdaNHX9R0vBJLTdFa3Y7X-smA92c8w"
-AISENSY_URL     = "https://backend.api-wa.co/campaign/chatico/api/v2"
+AISENSY_API_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY0ZDM2ZTZiNzNjM2NmMjIwNmE4MjA2OCIsIm5hbWUiOiJjaGF0aWNvIGFsZXJ0IiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY0ZDM2ZTZhNzNjM2NmMjIwNmE4MjA2MyIsImFjdGl2ZVBsYW4iOiJCQVNJQ19NT05USExZIiwiaWF0IjoxNzYyMTUyODUyfQ.Rl0OfVFNGiUd8vdaNHX9R0vBJLTdFa3Y7X-smA92c8w"
+AISENSY_URL      = "https://backend.api-wa.co/campaign/chatico/api/v2"
 AISENSY_CAMPAIGN = "testingauthentication"
 AISENSY_USERNAME = "chatico alert"
 
 
 def _find_debtor_by_phone(phone_number):
-    """
-    Look up debtor by phone from AccMaster (single DB).
-    """
     record = AccMaster.objects.filter(phone2__endswith=phone_number).first()
     if record:
         return {
-            "code":       record.code,
-            "name":       record.name,
-            "place":      record.place or "",
-            "phone2":     record.phone2 or "",
+            "code":        record.code,
+            "name":        record.name,
+            "place":       record.place or "",
+            "phone2":      record.phone2 or "",
             "exregnodate": record.exregnodate or "0",
-            "client_id":  record.client_id,
+            "client_id":   record.client_id,
         }
     return None
 
 
 def _find_branch_by_client_id(client_id):
-    """
-    Look up the shop/branch info from Misel table using client_id.
-    Returns dict with branch_name and branch_address, or None.
-    """
+    """Look up branch info from the Misel table using client_id."""
     if not client_id:
         return None
     record = Misel.objects.filter(client_id=client_id).first()
@@ -160,62 +153,24 @@ def _find_branch_by_client_id(client_id):
     return None
 
 
-@api_view(["POST"])
-@permission_classes([permissions.AllowAny])
-def user_login(request):
+def _find_branch_master_by_phone(phone_number):
     """
-    DEPRECATED direct login — now redirects users to the OTP flow.
-    POST { phone_number: "9XXXXXXXXX" }
-    Checks if the number exists, then triggers OTP automatically.
+    Look up BranchMaster by contact_number matching the user's phone.
+    Used as a fallback when _find_branch_by_client_id returns nothing.
     """
-    phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
+    if not phone_number:
+        return None
+    branch = BranchMaster.objects.filter(
+        contact_number__endswith=phone_number,
+        status='active'
+    ).first()
+    if branch:
+        return {
+            "branch_name":    branch.branch_name or "",
+            "branch_address": branch.address or "",
+        }
+    return None
 
-    if not phone_number or not phone_number.lstrip("+").isdigit() or len(phone_number.lstrip("+")) < 10:
-        return Response({"error": "Please provide a valid 10-digit mobile number."}, status=400)
-
-    phone_number = phone_number[-10:]
-
-    # Check if number exists in AccMaster or local DB
-    local_user = User.objects.filter(phone_number=phone_number).first()
-    if not local_user:
-        debtor = _find_debtor_by_phone(phone_number)
-        if not debtor:
-            return Response(
-                {"error": "Mobile number not registered. Please contact your admin."},
-                status=404
-            )
-        name = (debtor.get("name") or "user").split()[0]
-    else:
-        if _block_if_disabled(local_user):
-            return Response({"error": "Your account is disabled. Please contact admin."}, status=403)
-        name = (local_user.business_name or local_user.username or "user").split()[0]
-
-    # Generate and send OTP
-    otp = "".join(random.choices(string.digits, k=6))
-    cache.set(f"otp_{phone_number}", otp, timeout=300)
-
-    print(f"[OTP] Generated OTP {otp} for {phone_number}")
-
-    sent, err_msg = _send_whatsapp_otp(phone_number, otp, name)
-
-    if not sent:
-        print(f"[OTP] AiSensy send failed for {phone_number}: {err_msg}")
-        return Response({
-            "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
-            "phone_number": phone_number,
-            "requires_otp": True,
-            # ── REMOVE dev_otp in production ──
-            "dev_otp":      otp,
-        })
-
-    return Response({
-        "message":      f"OTP sent to WhatsApp number ending in {phone_number[-4:]}",
-        "phone_number": phone_number,
-        "requires_otp": True,
-    })
-
-
-# ─── Helper: Send OTP via WhatsApp (AiSensy) ─────────────────────────────────
 
 def _send_whatsapp_otp(phone_number: str, otp: str, name: str = "user") -> tuple:
     payload = {
@@ -228,15 +183,15 @@ def _send_whatsapp_otp(phone_number: str, otp: str, name: str = "user") -> tuple
         "media":          {},
         "buttons": [
             {
-                "type":     "button",
-                "sub_type": "url",
-                "index":    0,
+                "type":       "button",
+                "sub_type":   "url",
+                "index":      0,
                 "parameters": [{"type": "text", "text": otp}]
             }
         ],
-        "carouselCards": [],
-        "location":      {},
-        "attributes":    {},
+        "carouselCards":       [],
+        "location":            {},
+        "attributes":          {},
         "paramsFallbackValue": {"FirstName": name}
     }
     try:
@@ -255,13 +210,15 @@ def _send_whatsapp_otp(phone_number: str, otp: str, name: str = "user") -> tuple
         return False, str(e)
 
 
+# ══════════════════════════ LOGIN FLOW ═══════════════════════════
+
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
 def user_request_otp(request):
     """
-    STEP 1 — Request OTP
-    POST { phone_number: "9XXXXXXXXX" }
-    Checks AccMaster (default DB) first, then local DB
+    LOGIN — send OTP.
+    Allowed if phone is in AccMaster OR already in User table (self-signed-up).
+    Blocked with a sign-up prompt if neither.
     """
     phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
 
@@ -270,36 +227,35 @@ def user_request_otp(request):
 
     phone_number = phone_number[-10:]
 
-    name = "user"
     local_user = User.objects.filter(phone_number=phone_number).first()
+    debtor     = _find_debtor_by_phone(phone_number)
+
+    # Allow login if user is in User table (self-signed-up) OR in AccMaster.
+    # If neither, redirect to signup.
+    if not local_user and not debtor:
+        return Response(
+            {"error": "This number is not registered. Please sign up first.", "redirect": "signup"},
+            status=404
+        )
 
     if local_user:
+        if _block_if_disabled(local_user):
+            return Response({"error": "Your account is disabled. Please contact admin."}, status=403)
         name = (local_user.business_name or local_user.username or "user").split()[0]
     else:
-        # Check AccMaster (default DB)
-        debtor = _find_debtor_by_phone(phone_number)
-        if not debtor:
-            return Response(
-                {"error": "Mobile number not registered. Please contact your admin."},
-                status=404
-            )
         name = (debtor.get("name") or "user").split()[0]
 
     otp = "".join(random.choices(string.digits, k=6))
     cache.set(f"otp_{phone_number}", otp, timeout=300)
-
-    print(f"[OTP] Generated OTP {otp} for {phone_number}")
+    print(f"[OTP LOGIN] Generated OTP {otp} for {phone_number}")
 
     sent, err_msg = _send_whatsapp_otp(phone_number, otp, name)
 
     if not sent:
-        # ✅ Don't delete OTP from cache — user can still enter it manually
-        # OTP is visible in the terminal: [OTP] Generated OTP xxxxxx for xxxxxxxxxx
         print(f"[OTP] AiSensy send failed for {phone_number}: {err_msg}")
         return Response({
             "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
             "phone_number": phone_number,
-            # ── REMOVE the line below in production once AiSensy is working ──
             "dev_otp":      otp,
         })
 
@@ -313,9 +269,9 @@ def user_request_otp(request):
 @permission_classes([permissions.AllowAny])
 def user_verify_otp(request):
     """
-    STEP 2 — Verify OTP → Login
-    POST { phone_number: "9XXXXXXXXX", otp: "123456" }
-    Creates user from AccMaster data (default DB) if not already in local DB
+    LOGIN — verify OTP and return JWT.
+    Works for both AccMaster customers (auto-creates User if needed)
+    and previously self-signed-up users.
     """
     phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
     otp_input    = request.data.get("otp", "").strip()
@@ -342,16 +298,19 @@ def user_verify_otp(request):
     local_user = User.objects.filter(phone_number=phone_number).first()
 
     if local_user:
-        user        = local_user
-        debtor_name = local_user.business_name or ""
-        # Enrich from AccMaster (default DB)
+        # Already in User table (AccMaster customer or self-signed-up)
+        user = local_user
+        if _block_if_disabled(user):
+            return Response({"error": "Your account is disabled. Please contact admin."}, status=403)
         debtor = _find_debtor_by_phone(phone_number)
         if debtor:
             debtor_code = (debtor.get("code") or "").strip()
-            debtor_name = (debtor.get("name") or debtor_name).strip()
+            debtor_name = (debtor.get("name") or local_user.business_name or "").strip()
             place       = (debtor.get("place") or "").strip()
+        else:
+            debtor_name = local_user.business_name or ""
     else:
-        # Must find in AccMaster to create user
+        # Not in User table yet — must be an AccMaster customer logging in for the first time
         debtor = _find_debtor_by_phone(phone_number)
 
         if not debtor:
@@ -372,19 +331,14 @@ def user_verify_otp(request):
             }
         )
 
-    if _block_if_disabled(user):
-        return Response({"error": "Your account is disabled. Please contact admin."}, status=403)
-
-    # Resolve client_id: prefer stored on user, fall back to debtor lookup
-    client_id = (getattr(user, 'client_id', '') or '').strip()
+    client_id = (getattr(user, "client_id", "") or "").strip()
     if not client_id:
         debtor_fresh = _find_debtor_by_phone(phone_number)
-        client_id = (debtor_fresh.get('client_id') or '') if debtor_fresh else ''
+        client_id    = (debtor_fresh.get("client_id") or "") if debtor_fresh else ""
 
-    # Look up branch/shop name from Misel table via client_id
-    branch_info    = _find_branch_by_client_id(client_id)
-    branch_name    = branch_info.get('branch_name', '')    if branch_info else ''
-    branch_address = branch_info.get('branch_address', '') if branch_info else ''
+    branch_info    = _find_branch_by_client_id(client_id) or _find_branch_master_by_phone(phone_number)
+    branch_name    = branch_info.get("branch_name", "")    if branch_info else ""
+    branch_address = branch_info.get("branch_address", "") if branch_info else ""
 
     refresh = RefreshToken.for_user(user)
     return Response({
@@ -399,6 +353,198 @@ def user_verify_otp(request):
             "branch_name":    branch_name,
             "branch_address": branch_address,
         }
+    })
+
+
+# ══════════════════════════ SIGN-UP FLOW ══════════════════════════
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def user_request_otp_signup(request):
+    """
+    SIGN-UP — send OTP.
+    Blocked if phone is already in User table  → direct them to Login.
+    Blocked if phone is in AccMaster           → direct them to Login.
+    Allowed only for brand-new numbers not found in either table.
+    Also accepts 'name' to greet user by name on WhatsApp and cache for verify step.
+    """
+    phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
+    name         = request.data.get("name", "").strip()
+
+    if not phone_number or not phone_number.lstrip("+").isdigit() or len(phone_number.lstrip("+")) < 10:
+        return Response({"error": "Please provide a valid 10-digit mobile number."}, status=400)
+
+    phone_number = phone_number[-10:]
+
+    # ── Block if already self-signed-up (exists in User table) ──────────────
+    if User.objects.filter(phone_number=phone_number).exists():
+        return Response(
+            {
+                "error":    "This number is already registered. Please login instead.",
+                "redirect": "login",   # frontend uses this to auto-switch to Login tab
+            },
+            status=400
+        )
+
+    # ── Block if an AccMaster (shop) customer — they must use Login ──────────
+    debtor = _find_debtor_by_phone(phone_number)
+    if debtor:
+        return Response(
+            {
+                "error":    "This number belongs to a registered customer. Please use Login instead.",
+                "redirect": "login",
+            },
+            status=400
+        )
+
+    otp = "".join(random.choices(string.digits, k=6))
+    cache.set(f"otp_signup_{phone_number}", otp, timeout=300)
+    # Cache name so verify step can use it even if not re-sent
+    cache.set(f"otp_signup_name_{phone_number}", name, timeout=300)
+    print(f"[OTP SIGNUP] Generated OTP {otp} for {phone_number} | name={name or '(none)'}")
+
+    sent, err_msg = _send_whatsapp_otp(phone_number, otp, name or "there")
+
+    if not sent:
+        print(f"[OTP SIGNUP] AiSensy send failed for {phone_number}: {err_msg}")
+        return Response({
+            "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
+            "phone_number": phone_number,
+            "dev_otp":      otp,
+        })
+
+    return Response({
+        "message":      f"OTP sent to WhatsApp number ending in {phone_number[-4:]}",
+        "phone_number": phone_number,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def user_verify_otp_signup(request):
+    """
+    SIGN-UP — verify OTP and create a new User.
+    Phone is required, name is required, email is optional.
+    Saves to User table only (not AccMaster — that is a read-only external sync table).
+    name is saved to business_name field to stay consistent with AccMaster customer records.
+    """
+    phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
+    otp_input    = request.data.get("otp", "").strip()
+    name         = request.data.get("name", "").strip()
+    email        = request.data.get("email", "").strip()
+
+    if not phone_number or not otp_input:
+        return Response({"error": "Phone number and OTP are required."}, status=400)
+
+    phone_number = phone_number[-10:]
+    cache_key    = f"otp_signup_{phone_number}"
+    cached_otp   = cache.get(cache_key)
+
+    if not cached_otp:
+        return Response({"error": "OTP expired or not requested. Please request a new OTP."}, status=400)
+
+    if otp_input != cached_otp:
+        return Response({"error": "Invalid OTP. Please try again."}, status=400)
+
+    cache.delete(cache_key)
+
+    # Fallback: use cached name if frontend didn't re-send it at the verify step
+    if not name:
+        name = cache.get(f"otp_signup_name_{phone_number}", "")
+    cache.delete(f"otp_signup_name_{phone_number}")
+
+    # Safety net: if somehow an existing user reaches verify (e.g. OTP was
+    # already in cache from before we added the request-step block), log them
+    # in cleanly instead of creating a duplicate.
+    existing_user = User.objects.filter(phone_number=phone_number).first()
+    if existing_user:
+        if name:
+            existing_user.business_name = name
+        if email:
+            existing_user.email = email
+        existing_user.save(update_fields=["business_name", "email"])
+        refresh = RefreshToken.for_user(existing_user)
+        return Response({
+            "access":  str(refresh.access_token),
+            "refresh": str(refresh),
+            "user":    UserPublicSerializer(existing_user).data,
+        })
+
+    # Build a unique username
+    username_base = name.lower().replace(" ", "_") if name else f"user_{phone_number}"
+
+    username      = username_base
+    counter       = 1
+    while User.objects.filter(username=username).exists():
+        username = f"{username_base}_{counter}"
+        counter += 1
+
+    create_kwargs = {
+        "username":      username,
+        "user_type":     "user",
+        "status":        "Active",
+        "phone_number":  phone_number,
+        "business_name": name,
+    }
+    if email:
+        create_kwargs["email"] = email
+
+    user = User.objects.create(**create_kwargs)
+
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        "access":  str(refresh.access_token),
+        "refresh": str(refresh),
+        "user":    {**UserPublicSerializer(user).data, "is_new_user": True},
+    }, status=201)
+
+
+# ══════════════════════════ LEGACY / UNUSED ═══════════════════════
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def user_login(request):
+    """Kept for backward compatibility. Prefer user_request_otp."""
+    phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
+
+    if not phone_number or not phone_number.lstrip("+").isdigit() or len(phone_number.lstrip("+")) < 10:
+        return Response({"error": "Please provide a valid 10-digit mobile number."}, status=400)
+
+    phone_number = phone_number[-10:]
+
+    local_user = User.objects.filter(phone_number=phone_number).first()
+    if not local_user:
+        debtor = _find_debtor_by_phone(phone_number)
+        if not debtor:
+            return Response(
+                {"error": "Mobile number not registered. Please contact your admin."},
+                status=404
+            )
+        name = (debtor.get("name") or "user").split()[0]
+    else:
+        if _block_if_disabled(local_user):
+            return Response({"error": "Your account is disabled. Please contact admin."}, status=403)
+        name = (local_user.business_name or local_user.username or "user").split()[0]
+
+    otp = "".join(random.choices(string.digits, k=6))
+    cache.set(f"otp_{phone_number}", otp, timeout=300)
+    print(f"[OTP] Generated OTP {otp} for {phone_number}")
+
+    sent, err_msg = _send_whatsapp_otp(phone_number, otp, name)
+
+    if not sent:
+        print(f"[OTP] AiSensy send failed for {phone_number}: {err_msg}")
+        return Response({
+            "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
+            "phone_number": phone_number,
+            "requires_otp": True,
+            "dev_otp":      otp,
+        })
+
+    return Response({
+        "message":      f"OTP sent to WhatsApp number ending in {phone_number[-4:]}",
+        "phone_number": phone_number,
+        "requires_otp": True,
     })
 
 
@@ -490,7 +636,7 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     def update(self, request, *args, **kwargs):
         try:
             instance = self.get_object()
-            data = request.data.copy()
+            data     = request.data.copy()
             data.pop('category', None)
             data.pop('valid_until', None)
             serializer = ProductCreateSerializer(instance, data=data, partial=True)
@@ -604,7 +750,7 @@ class OfferMasterListCreateView(generics.ListCreateAPIView):
             if branch_ids: data['branch_ids'] = branch_ids
             serializer = self.get_serializer(data=data)
             serializer.is_valid(raise_exception=True)
-            offer_master = serializer.save(user=request.user)
+            offer_master        = serializer.save(user=request.user)
             response_serializer = OfferMasterSerializer(offer_master, context={'request': request})
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
         except Exception as e:
@@ -753,7 +899,7 @@ def get_branch_offers(request, branch_id):
 def get_all_branches_dropdown(request):
     user = request.user
     try:
-        if user.user_type == 'admin':
+        if user.user_type == 'admin' or user.is_superuser:
             branches = BranchMaster.objects.filter(status='active').select_related('user').order_by('user__shop_name', 'branch_name')
         else:
             branches = BranchMaster.objects.filter(user=user, status='active').order_by('branch_name')
@@ -842,9 +988,14 @@ class TemplateListView(APIView):
 def user_dashboard_stats(request):
     user = request.user
 
-    # Resolve branch info from Misel table using user's client_id
-    client_id      = (getattr(user, 'client_id', '') or '').strip()
-    branch_info    = _find_branch_by_client_id(client_id)
+    client_id = (getattr(user, 'client_id', '') or '').strip()
+    phone     = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+    if len(phone) > 10:
+        phone = phone[-10:]
+
+    branch_info = _find_branch_by_client_id(client_id)
+    if not branch_info and phone:
+        branch_info = _find_branch_master_by_phone(phone)
     branch_name    = branch_info.get('branch_name', '')    if branch_info else ''
     branch_address = branch_info.get('branch_address', '') if branch_info else ''
 
@@ -854,7 +1005,6 @@ def user_dashboard_stats(request):
         "active_offers":        Product.objects.filter(user=user, is_active=True).count(),
         "total_offer_masters":  OfferMaster.objects.filter(user=user).count(),
         "active_offer_masters": OfferMaster.objects.filter(user=user, status='active').count(),
-        # Branch / shop identity
         "client_id":      client_id,
         "branch_name":    branch_name,
         "branch_address": branch_address,
@@ -884,20 +1034,20 @@ class AdminListView(APIView):
     def get(self, request):
         try:
             search_term = request.GET.get("search", "")
-            # Get all phone numbers from AccMaster that belong to this admin's client_id
-            admin_client_id = getattr(request.user, 'client_id', '') or ''
-            phones = AccMaster.objects.filter(
-                client_id=admin_client_id
-            ).values_list('phone2', flat=True)
-            phone_list = [p[-10:] for p in phones if p and len(p) >= 10]
-            queryset = User.objects.filter(user_type="user", phone_number__in=phone_list)
+
+            # Show ALL users regardless of AccMaster linkage
+            queryset = User.objects.filter(user_type="user")
+
             if search_term:
                 queryset = queryset.filter(
                     Q(username__icontains=search_term) |
                     Q(email__icontains=search_term) |
                     Q(shop_name__icontains=search_term) |
-                    Q(location__icontains=search_term)
+                    Q(location__icontains=search_term) |
+                    Q(business_name__icontains=search_term) |
+                    Q(phone_number__icontains=search_term)
                 )
+
             queryset = queryset.order_by("-date_joined")
             return Response(UserPublicSerializer(queryset, many=True).data)
         except Exception as e:
@@ -938,12 +1088,8 @@ class AdminStatsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminUser]
 
     def get(self, request):
-        admin_client_id = getattr(request.user, 'client_id', '') or ''
-        phones = AccMaster.objects.filter(
-            client_id=admin_client_id
-        ).values_list('phone2', flat=True)
-        phone_list = [p[-10:] for p in phones if p and len(p) >= 10]
-        base_qs = User.objects.filter(user_type="user", phone_number__in=phone_list)
+        # Show stats for ALL users
+        base_qs = User.objects.filter(user_type="user")
         return Response({
             "total_admins":    base_qs.count(),
             "active_admins":   base_qs.filter(status="Active").count(),
@@ -959,7 +1105,7 @@ class BranchMasterListCreateView(APIView):
     def get(self, request):
         try:
             if request.user.is_superuser or request.user.user_type == 'admin':
-                branches = BranchMaster.objects.all().select_related('user')
+                branches = BranchMaster.objects.all().select_related('user').order_by('user__shop_name', 'branch_name')
             else:
                 branches = BranchMaster.objects.filter(user=request.user)
             serializer = BranchMasterSerializer(branches, many=True, context={'request': request})
@@ -1062,19 +1208,13 @@ def get_all_users_for_dropdown(request):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def sync_misel_shops(request):
-    """
-    Syncs shops from Misel model into local User records.
-    Reads directly from the default DB.
-    """
     if not (request.user.is_superuser or request.user.user_type == 'admin'):
         return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
-    # ✅ Read Misel records from the default DB
     misel_records = Misel.objects.all()
-
-    created       = []
-    skipped       = []
-    no_client_id  = []
+    created      = []
+    skipped      = []
+    no_client_id = []
 
     for shop in misel_records:
         firm_name = (shop.firm_name or '').strip()
@@ -1139,23 +1279,13 @@ def public_branch_offers(request, branch_id):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def user_invoices(request):
-    """
-    Returns invoices from AccInvMast model (single DB).
-
-    Matches by debtor_code (extracted from username: debtor_<code>_<phone>)
-    against customerid in AccInvMast.
-
-    Query params:
-      ?debtor_code=<code>  — override auto-detected code (optional)
-      ?limit=<n>           — max invoices to return (default 20, max 50)
-    """
     debtor_code = request.query_params.get('debtor_code', '').strip()
 
     if not debtor_code:
         username = getattr(request.user, 'username', '') or ''
         if username.startswith('debtor_'):
-            inner = username[len('debtor_'):]
-            parts = inner.rsplit('_', 1)
+            inner       = username[len('debtor_'):]
+            parts       = inner.rsplit('_', 1)
             debtor_code = parts[0] if len(parts) == 2 else inner
 
     if not debtor_code:
@@ -1166,7 +1296,6 @@ def user_invoices(request):
 
     limit = min(int(request.query_params.get('limit', 20)), 50)
 
-    # ✅ Query directly from default DB — no external API needed
     invoices_qs = AccInvMast.objects.filter(
         customerid=debtor_code
     ).order_by('-slno').values('slno', 'invdate', 'nettotal')[:limit]
@@ -1187,15 +1316,12 @@ def user_invoices(request):
         'invoices':    collected,
     })
 
+
 # ================================================================
 # ===================== SYNC DATA VIEWS ==========================
-# All endpoints below are admin-only.
-# client_id in these tables is purely for login validation —
-# it is NOT used as a data filter here.
 # ================================================================
 
 def _require_admin(user):
-    """Returns True if the user is NOT an admin (used to block access)."""
     return not (user.is_superuser or user.user_type == 'admin')
 
 
@@ -1204,19 +1330,8 @@ def _require_admin(user):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def acc_master_list(request):
-    """
-    GET /api/acc-master/
-    Admin  → sees ALL customers scoped to their client_id, with search/pagination.
-    User   → sees ONLY their own AccMaster record, looked up via phone number.
-
-    Query params (admin only):
-      ?search=<text>       — filter by name, code, phone2, or place
-      ?limit=<n>           — page size (default 50, max 200)
-      ?offset=<n>          — pagination offset (default 0)
-    """
     user = request.user
 
-    # ── ADMIN PATH ────────────────────────────────────────────────
     if user.is_superuser or user.user_type == 'admin':
         admin_client_id = getattr(user, 'client_id', '') or ''
         qs = AccMaster.objects.filter(client_id=admin_client_id).order_by('code')
@@ -1242,8 +1357,6 @@ def acc_master_list(request):
             'results': AccMasterSerializer(qs, many=True).data,
         })
 
-    # ── REGULAR USER PATH ─────────────────────────────────────────
-    # Return only the single AccMaster record matching their phone number
     phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
     if len(phone) > 10:
         phone = phone[-10:]
@@ -1270,14 +1383,8 @@ def acc_master_list(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def acc_master_detail(request, pk):
-    """
-    GET /api/acc-master/<id>/
-    Admin  → any customer record by pk, scoped to client_id, + last 50 invoices.
-    User   → only their own record (pk must match their phone-resolved AccMaster id).
-    """
     user = request.user
 
-    # ── ADMIN PATH ────────────────────────────────────────────────
     if user.is_superuser or user.user_type == 'admin':
         admin_client_id = getattr(user, 'client_id', '') or ''
         try:
@@ -1303,30 +1410,19 @@ def acc_master_detail(request, pk):
         data['invoice_count'] = len(invoice_data)
         return Response(data)
 
-    # ── REGULAR USER PATH ─────────────────────────────────────────
     phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
     if len(phone) > 10:
         phone = phone[-10:]
 
     if not phone:
-        return Response(
-            {'error': 'No phone number linked to your account.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'No phone number linked to your account.'}, status=status.HTTP_400_BAD_REQUEST)
 
     record = AccMaster.objects.filter(phone2__endswith=phone).first()
     if not record:
-        return Response(
-            {'error': 'No customer account found for your phone number.'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'No customer account found for your phone number.'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Ensure the requested pk actually belongs to this user
     if record.pk != pk:
-        return Response(
-            {'error': 'You do not have permission to view this record.'},
-            status=status.HTTP_403_FORBIDDEN
-        )
+        return Response({'error': 'You do not have permission to view this record.'}, status=status.HTTP_403_FORBIDDEN)
 
     return Response(AccMasterSerializer(record).data)
 
@@ -1336,20 +1432,10 @@ def acc_master_detail(request, pk):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def misel_list(request):
-    """
-    GET /api/misel/
-    Admin only. List all synced shops/firms.
-
-    Query params:
-      ?search=<text>   — filter by firm_name or address
-      ?limit=<n>       — page size (default 50, max 200)
-      ?offset=<n>      — pagination offset
-    """
     if _require_admin(request.user):
         return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
 
-    admin_client_id = getattr(request.user, 'client_id', '') or ''
-    qs = Misel.objects.filter(client_id=admin_client_id).order_by('firm_name')
+    qs = Misel.objects.all().order_by('firm_name')
 
     search = request.query_params.get('search', '').strip()
     if search:
@@ -1374,16 +1460,11 @@ def misel_list(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def misel_detail(request, pk):
-    """
-    GET /api/misel/<id>/
-    Admin only. Single shop/firm record.
-    """
     if _require_admin(request.user):
         return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
 
     try:
-        admin_client_id = getattr(request.user, 'client_id', '') or ''
-        obj = Misel.objects.get(pk=pk, client_id=admin_client_id)
+        obj = Misel.objects.get(pk=pk)
     except Misel.DoesNotExist:
         return Response({'error': 'Shop not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1395,22 +1476,8 @@ def misel_detail(request, pk):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def acc_inv_mast_list(request):
-    """
-    GET /api/invoices/
-    Admin  → sees ALL invoices scoped to their client_id.
-    User   → sees only their own invoices, looked up via phone → AccMaster → customerid.
-
-    Query params:
-      ?customerid=<code>    — (admin only) filter by customer code
-      ?date_from=YYYY-MM-DD — filter from date
-      ?date_to=YYYY-MM-DD   — filter to date
-      ?search=<text>        — filter by customerid or slno
-      ?limit=<n>            — page size (default 50, max 200 for admin / 50 for user)
-      ?offset=<n>           — pagination offset
-    """
     user = request.user
 
-    # ── ADMIN PATH ────────────────────────────────────────────────
     if user.is_superuser or user.user_type == 'admin':
         admin_client_id = getattr(user, 'client_id', '') or ''
         qs = AccInvMast.objects.filter(client_id=admin_client_id).order_by('-invdate', '-slno')
@@ -1443,8 +1510,6 @@ def acc_inv_mast_list(request):
             'results': AccInvMastSerializer(qs, many=True).data,
         })
 
-    # ── REGULAR USER PATH ─────────────────────────────────────────
-    # Resolve customer code from phone number via AccMaster
     phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
     if len(phone) > 10:
         phone = phone[-10:]
@@ -1479,26 +1544,20 @@ def acc_inv_mast_list(request):
     qs     = qs[offset: offset + limit]
 
     return Response({
-        'total':        total,
-        'limit':        limit,
-        'offset':       offset,
-        'customerid':   record.code,
+        'total':         total,
+        'limit':         limit,
+        'offset':        offset,
+        'customerid':    record.code,
         'customer_name': record.name,
-        'results':      AccInvMastSerializer(qs, many=True).data,
+        'results':       AccInvMastSerializer(qs, many=True).data,
     })
 
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def acc_inv_mast_detail(request, pk):
-    """
-    GET /api/invoices/<id>/
-    Admin  → can fetch any invoice scoped to their client_id, includes customer name/place.
-    User   → can only fetch their own invoice (matched via phone → AccMaster → customerid).
-    """
     user = request.user
 
-    # ── ADMIN PATH ────────────────────────────────────────────────
     if user.is_superuser or user.user_type == 'admin':
         admin_client_id = getattr(user, 'client_id', '') or ''
         try:
@@ -1512,23 +1571,16 @@ def acc_inv_mast_detail(request, pk):
         data['customer_place'] = customer.place if customer else None
         return Response(data)
 
-    # ── REGULAR USER PATH ─────────────────────────────────────────
     phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
     if len(phone) > 10:
         phone = phone[-10:]
 
     if not phone:
-        return Response(
-            {'error': 'No phone number linked to your account.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'No phone number linked to your account.'}, status=status.HTTP_400_BAD_REQUEST)
 
     record = AccMaster.objects.filter(phone2__endswith=phone).first()
     if not record:
-        return Response(
-            {'error': 'No customer account found for your phone number.'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'No customer account found for your phone number.'}, status=status.HTTP_404_NOT_FOUND)
 
     try:
         obj = AccInvMast.objects.get(pk=pk, customerid=record.code, client_id=record.client_id)
@@ -1549,18 +1601,14 @@ def acc_inv_mast_detail(request, pk):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def sync_data_stats(request):
-    """
-    GET /api/sync-data/stats/
-    Admin only. Quick summary counts for all three sync tables.
-    """
     if _require_admin(request.user):
         return Response({'error': 'Admin access only.'}, status=status.HTTP_403_FORBIDDEN)
 
     admin_client_id = getattr(request.user, 'client_id', '') or ''
     return Response({
         'acc_master_total': AccMaster.objects.filter(client_id=admin_client_id).count(),
-        'misel_total':      Misel.objects.filter(client_id=admin_client_id).count(),
         'invoices_total':   AccInvMast.objects.filter(client_id=admin_client_id).count(),
+        'misel_total':      Misel.objects.all().count(),
     })
 
 
@@ -1569,46 +1617,26 @@ def sync_data_stats(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def my_points(request):
-    """
-    GET /api/my-points/
-    Returns the current user's exregnodate value as 'points'.
-    Looks up the user by phone_number in AccMaster so the value is
-    always live (not stale from the last login).
-    Sends the raw string exactly as stored in the DB — no rounding,
-    no formatting, no conversion.
-    """
     user  = request.user
     phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
     if len(phone) > 10:
         phone = phone[-10:]
 
     record = AccMaster.objects.filter(phone2__endswith=phone).first() if phone else None
-
-    raw = (record.exregnodate or '0') if record else '0'
+    raw    = (record.exregnodate or '0') if record else '0'
 
     return Response({
         'points': raw.strip() if raw else '0',
-    }) 
+    })
+
+
 # -------------------- BranchMaster (Invoice-style List & Detail) --------------------
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def branch_list(request):
-    """
-    GET /api/branches/
-    Admin  → sees ALL branches from all users.
-    User   → sees only their own branches.
-
-    Query params:
-      ?search=<text>    — filter by branch_name or branch_code
-      ?status=active    — filter by status (active | inactive)
-      ?city=<text>      — filter by city
-      ?limit=<n>        — page size (default 20, max 200 for admin / 50 for user)
-      ?offset=<n>       — pagination offset
-    """
     user = request.user
 
-    # ── ADMIN PATH ────────────────────────────────────────────────
     if user.is_superuser or user.user_type == 'admin':
         qs = BranchMaster.objects.all().select_related('user').order_by('-created_at')
 
@@ -1638,9 +1666,6 @@ def branch_list(request):
             'results': BranchMasterSerializer(qs, many=True, context={'request': request}).data,
         })
 
-    # ── REGULAR USER PATH ─────────────────────────────────────────
-  # ── REGULAR USER PATH ─────────────────────────────────────────
-    # Users can see ALL active branches (read-only, 4 fields only)
     qs = BranchMaster.objects.filter(status='active').order_by('-created_at')
 
     search = request.query_params.get('search', '').strip()
@@ -1676,17 +1701,12 @@ def branch_list(request):
         'results': results,
     })
 
+
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def branch_detail(request, pk):
-    """
-    GET /api/branches/<uuid>/
-    Admin  → can fetch any branch; response includes owner info.
-    User   → can only fetch their own branch (returns 404 for others).
-    """
     user = request.user
 
-    # ── ADMIN PATH ────────────────────────────────────────────────
     if user.is_superuser or user.user_type == 'admin':
         try:
             branch = BranchMaster.objects.select_related('user').get(pk=pk)
@@ -1698,7 +1718,6 @@ def branch_detail(request, pk):
         data['owner_email'] = branch.user.email
         return Response(data)
 
-    # ── REGULAR USER PATH ─────────────────────────────────────────
     try:
         branch = BranchMaster.objects.get(pk=pk, user=user)
     except BranchMaster.DoesNotExist:
@@ -1708,3 +1727,47 @@ def branch_detail(request, pk):
         )
 
     return Response(BranchMasterSerializer(branch, context={'request': request}).data)
+
+
+# ===================== PUSH NOTIFICATIONS =====================
+
+from .models import ExpoPushToken
+from .push_notifications import send_expo_push_notification
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def register_push_token(request):
+    """Mobile app calls this to save/update the Expo push token."""
+    token       = request.data.get('token', '').strip()
+    device_type = request.data.get('device_type', '').strip()  # 'ios' or 'android'
+
+    if not token:
+        return Response({'error': 'token is required'}, status=400)
+
+    obj, created = ExpoPushToken.objects.update_or_create(
+        token=token,
+        defaults={'user': request.user, 'device_type': device_type}
+    )
+    return Response({'message': 'Token registered', 'created': created})
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def send_push_notification(request):
+    """Admin calls this to send a push notification to all users."""
+    if request.user.user_type != 'admin':
+        return Response({'error': 'Admin access only'}, status=403)
+
+    title = request.data.get('title', '').strip()
+    body  = request.data.get('body', '').strip()
+    data  = request.data.get('data', {})  # optional deep-link payload
+
+    if not title or not body:
+        return Response({'error': 'title and body are required'}, status=400)
+
+    tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
+    if not tokens:
+        return Response({'message': 'No registered tokens found'}, status=200)
+
+    result = send_expo_push_notification(tokens, title, body, data)
+    return Response({'sent_to': len(tokens), 'expo_response': result})

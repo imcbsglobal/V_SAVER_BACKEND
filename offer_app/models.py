@@ -361,6 +361,17 @@ class AccInvMast(models.Model):
 
     def __str__(self):
         return f"Invoice {self.slno} | {self.customerid} | {self.client_id}"
+    
+# ---------- Expo Push Token ----------
+class ExpoPushToken(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_tokens')
+    token = models.CharField(max_length=200, unique=True)
+    device_type = models.CharField(max_length=20, blank=True, null=True)  # 'ios' or 'android'
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user} - {self.device_type} - {self.token[:20]}"  
 
 
 # ---------- File Deletion Signals ----------
@@ -406,4 +417,7 @@ def auto_delete_file_on_change(sender, instance, **kwargs):
                 try:
                     old_file.delete(save=False)
                 except Exception:
-                    pass
+                    pass 
+
+
+              

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import User, Category, Product, Offer, BranchMaster, OfferMaster, OfferMasterMedia
+from .models import User, Category, Product, Offer, BranchMaster, OfferMaster, OfferMasterMedia, ExpoPushToken
 
 
 @admin.register(User)
@@ -47,3 +47,9 @@ class OfferMasterMediaAdmin(admin.ModelAdmin):
     list_display = ('offer_master', 'media_type', 'order', 'caption', 'uploaded_at')
     list_filter = ('media_type',)
     search_fields = ('offer_master__title', 'caption')
+
+
+@admin.register(ExpoPushToken)
+class ExpoPushTokenAdmin(admin.ModelAdmin):
+    list_display = ('user', 'device_type', 'token', 'created_at')
+    search_fields = ('user__phone_number', 'token')
