@@ -1731,6 +1731,9 @@ def branch_detail(request, pk):
 
 # ===================== PUSH NOTIFICATIONS =====================
 
+# ===================== PUSH NOTIFICATIONS =====================
+# Replace ONLY this section at the bottom of your views.py
+
 from .models import ExpoPushToken
 from .push_notifications import send_expo_push_notification
 
@@ -1760,7 +1763,7 @@ def send_push_notification(request):
 
     title = request.data.get('title', '').strip()
     body  = request.data.get('body', '').strip()
-    data  = request.data.get('data', {})  # optional deep-link payload
+    data  = request.data.get('data', {})
 
     if not title or not body:
         return Response({'error': 'title and body are required'}, status=400)
@@ -1769,5 +1772,16 @@ def send_push_notification(request):
     if not tokens:
         return Response({'message': 'No registered tokens found'}, status=200)
 
-    result = send_expo_push_notification(tokens, title, body, data)
-    return Response({'sent_to': len(tokens), 'expo_response': result})
+    responses, dead_tokens = send_expo_push_notification(tokens, title, body, data)
+
+    # Auto-delete dead/unregistered tokens
+    deleted_count = 0
+    if dead_tokens:
+        deleted_count, _ = ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+
+    return Response({
+        'sent_to':             len(tokens),
+        'batches':             len(responses),
+        'dead_tokens_removed': deleted_count,
+        'expo_response':       responses,
+    })
