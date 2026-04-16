@@ -419,5 +419,43 @@ def auto_delete_file_on_change(sender, instance, **kwargs):
                 except Exception:
                     pass 
 
+# ---------- Common Notification ----------
+class CommonNotification(models.Model):
+    """
+    Admin-created reusable notifications like 'Happy Vishu', 'Good Morning' etc.
+    Admin can schedule or instantly send these to all registered push token users.
+    """
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('sent', 'Sent'),
+        ('scheduled', 'Scheduled'),
+    ]
+    TARGET_CHOICES = [
+        ('all', 'All Users'),
+        ('active', 'Active Users Only'),
+    ]
 
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255, help_text="Notification title e.g. 'Happy Vishu 🎉'")
+    body = models.TextField(help_text="Notification body message")
+    image_url = models.URLField(blank=True, null=True, help_text="Optional image URL to show in notification")
+    target = models.CharField(max_length=20, choices=TARGET_CHOICES, default='all')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    scheduled_at = models.DateTimeField(blank=True, null=True, help_text="Leave blank to send immediately")
+    sent_at = models.DateTimeField(blank=True, null=True)
+    sent_count = models.IntegerField(default=0, help_text="Number of tokens notified")
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='created_notifications'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Common Notification'
+        verbose_name_plural = 'Common Notifications'
+
+    def __str__(self):
+        return f"{self.title} [{self.status}]"
               

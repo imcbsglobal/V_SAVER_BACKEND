@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from .models import User, Category, Product, Offer, OfferMaster, OfferMasterMedia, BranchMaster, AccMaster, Misel, AccInvMast
-
+from .models import CommonNotification
 
 # ---------------- USER SERIALIZERS ----------------
 
@@ -733,3 +733,18 @@ class AccInvMastSerializer(serializers.ModelSerializer):
             'synced_at',
         ]
         read_only_fields = fields
+        
+class CommonNotificationSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CommonNotification
+        fields = [
+            'id', 'title', 'body', 'image_url', 'target',
+            'status', 'scheduled_at', 'sent_at', 'sent_count',
+            'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['status', 'sent_at', 'sent_count', 'created_by', 'created_at', 'updated_at']
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.username if obj.created_by else None        

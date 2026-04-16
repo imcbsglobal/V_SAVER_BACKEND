@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import User, Category, Product, Offer, BranchMaster, OfferMaster, OfferMasterMedia, ExpoPushToken
-
+from .models import CommonNotification
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
@@ -53,3 +53,13 @@ class OfferMasterMediaAdmin(admin.ModelAdmin):
 class ExpoPushTokenAdmin(admin.ModelAdmin):
     list_display = ('user', 'device_type', 'token', 'created_at')
     search_fields = ('user__phone_number', 'token')
+
+
+
+
+@admin.register(CommonNotification)
+class CommonNotificationAdmin(admin.ModelAdmin):
+    list_display = ('title', 'target', 'status', 'sent_count', 'scheduled_at', 'sent_at', 'created_by', 'created_at')
+    list_filter = ('status', 'target')
+    search_fields = ('title', 'body')
+    readonly_fields = ('status', 'sent_at', 'sent_count', 'created_at', 'updated_at')

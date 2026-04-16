@@ -12,7 +12,8 @@ import random
 import string
 import requests as http_requests
 from django.core.cache import cache
-
+from .models import CommonNotification
+from .serializers import CommonNotificationSerializer
 from .models import User, Category, Product, Offer, OfferMaster, OfferMasterMedia, BranchMaster
 from .models import AccMaster, Misel, AccInvMast
 from .serializers import (
@@ -1784,4 +1785,88 @@ def send_push_notification(request):
         'batches':             len(responses),
         'dead_tokens_removed': deleted_count,
         'expo_response':       responses,
+    })
+
+
+
+# ── List / Create ──────────────────────────────────────────────
+class CommonNotificationListCreateView(generics.ListCreateAPIView):
+    serializer_class = CommonNotificationSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        return CommonNotification.objects.all()
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+# ── Retrieve / Update / Delete ─────────────────────────────────
+class CommonNotificationDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = CommonNotificationSerializer
+    permission_classes = [IsAdminUser]
+    queryset = CommonNotification.objects.all()
+    lookup_field = 'pk'
+
+    def get_serializer_class(self):
+        # Allow updating all fields except protected read-only ones on detail
+        return CommonNotificationSerializer
+
+
+# ── Send Now ───────────────────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def send_common_notification(request, pk):
+    """
+    Admin hits this to instantly send a common notification to all/active users.
+    POST /api/notifications/common/<uuid>/send/
+    """
+    try:
+        notif = CommonNotification.objects.get(pk=pk)
+    except CommonNotification.DoesNotExist:
+        return Response({'error': 'Notification not found.'}, status=404)
+
+    if notif.status == 'sent':
+        return Response({'error': 'This notification has already been sent.'}, status=400)
+
+    # Determine token queryset based on target
+    token_qs = ExpoPushToken.objects.select_related('user')
+    if notif.target == 'active':
+        token_qs = token_qs.filter(user__status='Active')
+
+    tokens = list(token_qs.values_list('token', flat=True))
+
+    dead_tokens = []
+    sent_count = 0
+
+    if tokens:
+        extra_data = {}
+        if notif.image_url:
+            extra_data['imageUrl'] = notif.image_url
+
+        responses, dead_tokens = send_expo_push_notification(
+            tokens, notif.title, notif.body, extra_data
+        )
+
+        # Clean up dead tokens
+        if dead_tokens:
+            ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+
+        sent_count = len(tokens) - len(dead_tokens)
+
+    # Mark as sent regardless of token count
+    notif.status = 'sent'
+    notif.sent_at = timezone.now()
+    notif.sent_count = sent_count
+    notif.save(update_fields=['status', 'sent_at', 'sent_count'])
+
+    if not tokens:
+        return Response({
+            'message': 'Notification marked as sent. No devices are registered for push notifications yet.',
+            'dead_tokens_cleaned': 0,
+        })
+
+    return Response({
+        'message': f'Notification sent to {sent_count} device(s).',
+        'dead_tokens_cleaned': len(dead_tokens),
     })

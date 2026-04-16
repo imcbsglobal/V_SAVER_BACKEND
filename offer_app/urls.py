@@ -1,7 +1,7 @@
 from django.urls import path
 from . import views
 from .views import public_branch_offers
-
+from .views import CommonNotificationListCreateView, CommonNotificationDetailView, send_common_notification
 urlpatterns = [
     # ---------- AUTH ----------
     path('admin/login/', views.admin_login, name='admin-login'),
@@ -92,4 +92,14 @@ urlpatterns = [
     # ---------- PUSH NOTIFICATIONS ----------
     path('push/register-token/',    views.register_push_token,    name='register-push-token'),
     path('push/send-notification/', views.send_push_notification, name='send-push-notification'),
+
+
+
+
+
+# ---------- COMMON NOTIFICATIONS ----------
+path('notifications/common/', CommonNotificationListCreateView.as_view(), name='common-notification-list'),
+path('notifications/common/<uuid:pk>/', CommonNotificationDetailView.as_view(), name='common-notification-detail'),
+path('notifications/common/<uuid:pk>/send/', send_common_notification, name='common-notification-send'),
+
 ]
