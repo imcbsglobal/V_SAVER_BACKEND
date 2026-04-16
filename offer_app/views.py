@@ -717,6 +717,10 @@ def public_offer_detail(request, offer_id):
 
 # ===================== OFFER MASTER =====================
 
+from .models import ExpoPushToken
+from .push_notifications import send_expo_push_notification
+
+
 class OfferMasterListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes     = [MultiPartParser, FormParser]
@@ -753,6 +757,30 @@ class OfferMasterListCreateView(generics.ListCreateAPIView):
             serializer.is_valid(raise_exception=True)
             offer_master        = serializer.save(user=request.user)
             response_serializer = OfferMasterSerializer(offer_master, context={'request': request})
+
+            # ── Send push notification to all users about the new offer ──────
+            try:
+                tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
+                if tokens:
+                    notif_title = f"🛍️ New Offer: {offer_master.title}"
+                    notif_body  = offer_master.description or "Check out the latest offer now!"
+                    _, dead_tokens = send_expo_push_notification(
+                        tokens,
+                        notif_title,
+                        notif_body,
+                        {
+                            'type':            'new_offer',
+                            'offer_master_id': str(offer_master.id),
+                        }
+                    )
+                    # Clean up dead tokens
+                    if dead_tokens:
+                        ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+                    print(f"[OfferMaster] Push sent to {len(tokens)} device(s) for offer '{offer_master.title}'")
+            except Exception as notif_err:
+                # Non-fatal — offer creation still succeeds even if push fails
+                print(f"[OfferMaster] Push notification failed (non-fatal): {notif_err}")
+
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
         except Exception as e:
             import traceback; traceback.print_exc()
@@ -1732,12 +1760,6 @@ def branch_detail(request, pk):
 
 # ===================== PUSH NOTIFICATIONS =====================
 
-# ===================== PUSH NOTIFICATIONS =====================
-# Replace ONLY this section at the bottom of your views.py
-
-from .models import ExpoPushToken
-from .push_notifications import send_expo_push_notification
-
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def register_push_token(request):
@@ -1788,10 +1810,9 @@ def send_push_notification(request):
     })
 
 
-
 # ── List / Create ──────────────────────────────────────────────
 class CommonNotificationListCreateView(generics.ListCreateAPIView):
-    serializer_class = CommonNotificationSerializer
+    serializer_class   = CommonNotificationSerializer
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
@@ -1809,7 +1830,6 @@ class CommonNotificationDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = 'pk'
 
     def get_serializer_class(self):
-        # Allow updating all fields except protected read-only ones on detail
         return CommonNotificationSerializer
 
 
@@ -1837,7 +1857,7 @@ def send_common_notification(request, pk):
     tokens = list(token_qs.values_list('token', flat=True))
 
     dead_tokens = []
-    sent_count = 0
+    sent_count  = 0
 
     if tokens:
         extra_data = {}
@@ -1855,18 +1875,18 @@ def send_common_notification(request, pk):
         sent_count = len(tokens) - len(dead_tokens)
 
     # Mark as sent regardless of token count
-    notif.status = 'sent'
-    notif.sent_at = timezone.now()
+    notif.status   = 'sent'
+    notif.sent_at  = timezone.now()
     notif.sent_count = sent_count
     notif.save(update_fields=['status', 'sent_at', 'sent_count'])
 
     if not tokens:
         return Response({
-            'message': 'Notification marked as sent. No devices are registered for push notifications yet.',
+            'message':            'Notification marked as sent. No devices are registered for push notifications yet.',
             'dead_tokens_cleaned': 0,
         })
 
     return Response({
-        'message': f'Notification sent to {sent_count} device(s).',
+        'message':            f'Notification sent to {sent_count} device(s).',
         'dead_tokens_cleaned': len(dead_tokens),
     })
