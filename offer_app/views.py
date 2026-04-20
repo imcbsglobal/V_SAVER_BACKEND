@@ -758,28 +758,33 @@ class OfferMasterListCreateView(generics.ListCreateAPIView):
             offer_master        = serializer.save(user=request.user)
             response_serializer = OfferMasterSerializer(offer_master, context={'request': request})
 
-            # ── Send push notification to all users about the new offer ──────
-            try:
-                tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
-                if tokens:
-                    notif_title = f"🛍️ New Offer: {offer_master.title}"
-                    notif_body  = offer_master.description or "Check out the latest offer now!"
-                    _, dead_tokens = send_expo_push_notification(
-                        tokens,
-                        notif_title,
-                        notif_body,
-                        {
-                            'type':            'new_offer',
-                            'offer_master_id': str(offer_master.id),
-                        }
-                    )
-                    # Clean up dead tokens
-                    if dead_tokens:
-                        ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
-                    print(f"[OfferMaster] Push sent to {len(tokens)} device(s) for offer '{offer_master.title}'")
-            except Exception as notif_err:
-                # Non-fatal — offer creation still succeeds even if push fails
-                print(f"[OfferMaster] Push notification failed (non-fatal): {notif_err}")
+            # ── Send push notification only if the offer is ACTIVE right now ──
+            # If status is 'scheduled', the scheduler will send the notification
+            # automatically when valid_from arrives (see scheduler._activate_scheduled_offers).
+            if offer_master.status == 'active':
+                try:
+                    tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
+                    if tokens:
+                        notif_title = f"🛍️ New Offer: {offer_master.title}"
+                        notif_body  = offer_master.description or "Check out the latest offer now!"
+                        _, dead_tokens = send_expo_push_notification(
+                            tokens,
+                            notif_title,
+                            notif_body,
+                            {
+                                'type':            'new_offer',
+                                'offer_master_id': str(offer_master.id),
+                            }
+                        )
+                        # Clean up dead tokens
+                        if dead_tokens:
+                            ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+                        print(f"[OfferMaster] Push sent to {len(tokens)} device(s) for offer '{offer_master.title}'")
+                except Exception as notif_err:
+                    # Non-fatal — offer creation still succeeds even if push fails
+                    print(f"[OfferMaster] Push notification failed (non-fatal): {notif_err}")
+            else:
+                print(f"[OfferMaster] Offer '{offer_master.title}' is scheduled — push will fire when it goes active.")
 
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
         except Exception as e:
@@ -1816,10 +1821,18 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        return CommonNotification.objects.all()
+        from datetime import timedelta
+        cutoff = timezone.now() - timedelta(hours=24)
+        # Always show scheduled/draft; only show sent notifications from the last 24 hours
+        return CommonNotification.objects.exclude(
+            status='sent',
+            sent_at__lt=cutoff,
+        ).order_by('-created_at')
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        scheduled_at = serializer.validated_data.get('scheduled_at')
+        status = 'scheduled' if scheduled_at else 'draft'
+        serializer.save(created_by=self.request.user, status=status)
 
 
 # ── Retrieve / Update / Delete ─────────────────────────────────
