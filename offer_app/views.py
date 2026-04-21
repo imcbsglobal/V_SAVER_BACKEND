@@ -120,11 +120,53 @@ def admin_login(request):
     })
 
 
-# ─── WhatsApp OTP (AiSensy) ───────────────────────────────────────────────────
-AISENSY_API_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY0ZDM2ZTZiNzNjM2NmMjIwNmE4MjA2OCIsIm5hbWUiOiJjaGF0aWNvIGFsZXJ0IiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY0ZDM2ZTZhNzNjM2NmMjIwNmE4MjA2MyIsImFjdGl2ZVBsYW4iOiJCQVNJQ19NT05USExZIiwiaWF0IjoxNzYyMTUyODUyfQ.Rl0OfVFNGiUd8vdaNHX9R0vBJLTdFa3Y7X-smA92c8w"
-AISENSY_URL      = "https://backend.api-wa.co/campaign/chatico/api/v2"
-AISENSY_CAMPAIGN = "testingauthentication"
-AISENSY_USERNAME = "chatico alert"
+# ─── SMS OTP (IMCBS) ──────────────────────────────────────────────────────────
+SMS_API_BASE_URL    = "https://sms.imcbs.com/api/sms/v1.0/send-sms"
+SMS_ACCESS_TOKEN    = "0AV9EI6AQ0EFCHQ"
+SMS_EXPIRE          = "2092314885"
+SMS_AUTH_SIGNATURE  = "bfdcd3efc2874d3529cd0f4d49380e0d"
+SMS_ROUTE           = "transactional"
+SMS_HEADER          = "VCARMT"
+SMS_ENTITY_ID       = "1701177666647932819"
+SMS_TEMPLATE_ID     = "1707177668810866932"
+# The API uses {#var#} as the OTP placeholder in the template
+SMS_MESSAGE_TEMPLATE = "{#var#} is the OTP for VCARE MART Mobile App.Valid for next 5 min. Do not share to anyone.VCARE MART"
+
+
+def _send_sms_otp(phone_number: str, otp: str) -> tuple:
+    """Send OTP via IMCBS SMS gateway. Returns (success: bool, error_msg: str)."""
+    # Build message with OTP substituted for {#var#}
+    message = SMS_MESSAGE_TEMPLATE.replace("{#var#}", otp)
+
+    params = {
+        "accessToken":          SMS_ACCESS_TOKEN,
+        "expire":               SMS_EXPIRE,
+        "authSignature":        SMS_AUTH_SIGNATURE,
+        "route":                SMS_ROUTE,
+        "smsHeader":            SMS_HEADER,
+        "messageContent":       message,
+        "recipients":           f"91{phone_number}",
+        "contentType":          "text",
+        "entityId":             SMS_ENTITY_ID,
+        "templateId":           SMS_TEMPLATE_ID,
+        "removeDuplicateNumbers": "1",
+        "flashSMS":             "0",
+    }
+
+    try:
+        res = http_requests.get(SMS_API_BASE_URL, params=params, timeout=10)
+        print(f"[SMS OTP] status={res.status_code} | phone=91{phone_number} | response={res.text}")
+        if res.status_code == 200:
+            return True, ""
+        try:
+            err_data = res.json()
+            err_msg  = err_data.get("message") or err_data.get("error") or res.text
+        except Exception:
+            err_msg = res.text or f"HTTP {res.status_code}"
+        return False, err_msg
+    except Exception as e:
+        print(f"[SMS OTP] Exception: {e}")
+        return False, str(e)
 
 
 def _find_debtor_by_phone(phone_number):
@@ -173,44 +215,6 @@ def _find_branch_master_by_phone(phone_number):
     return None
 
 
-def _send_whatsapp_otp(phone_number: str, otp: str, name: str = "user") -> tuple:
-    payload = {
-        "apiKey":         AISENSY_API_KEY,
-        "campaignName":   AISENSY_CAMPAIGN,
-        "destination":    f"91{phone_number}",
-        "userName":       AISENSY_USERNAME,
-        "templateParams": [name],
-        "source":         "otp-login",
-        "media":          {},
-        "buttons": [
-            {
-                "type":       "button",
-                "sub_type":   "url",
-                "index":      0,
-                "parameters": [{"type": "text", "text": otp}]
-            }
-        ],
-        "carouselCards":       [],
-        "location":            {},
-        "attributes":          {},
-        "paramsFallbackValue": {"FirstName": name}
-    }
-    try:
-        res = http_requests.post(AISENSY_URL, json=payload, timeout=10)
-        print(f"[AiSensy] status={res.status_code} | phone=91{phone_number} | response={res.text}")
-        if res.status_code == 200:
-            return True, ""
-        try:
-            err_data = res.json()
-            err_msg  = err_data.get("message") or err_data.get("error") or res.text
-        except Exception:
-            err_msg = res.text or f"HTTP {res.status_code}"
-        return False, err_msg
-    except Exception as e:
-        print(f"[AiSensy] Exception: {e}")
-        return False, str(e)
-
-
 # ══════════════════════════ LOGIN FLOW ═══════════════════════════
 
 @api_view(["POST"])
@@ -250,10 +254,10 @@ def user_request_otp(request):
     cache.set(f"otp_{phone_number}", otp, timeout=300)
     print(f"[OTP LOGIN] Generated OTP {otp} for {phone_number}")
 
-    sent, err_msg = _send_whatsapp_otp(phone_number, otp, name)
+    sent, err_msg = _send_sms_otp(phone_number, otp)
 
     if not sent:
-        print(f"[OTP] AiSensy send failed for {phone_number}: {err_msg}")
+        print(f"[OTP] SMS send failed for {phone_number}: {err_msg}")
         return Response({
             "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
             "phone_number": phone_number,
@@ -261,7 +265,7 @@ def user_request_otp(request):
         })
 
     return Response({
-        "message":      f"OTP sent to WhatsApp number ending in {phone_number[-4:]}",
+        "message":      f"OTP sent via SMS to number ending in {phone_number[-4:]}",
         "phone_number": phone_number,
     })
 
@@ -367,7 +371,7 @@ def user_request_otp_signup(request):
     Blocked if phone is already in User table  → direct them to Login.
     Blocked if phone is in AccMaster           → direct them to Login.
     Allowed only for brand-new numbers not found in either table.
-    Also accepts 'name' to greet user by name on WhatsApp and cache for verify step.
+    Also accepts 'name' to cache for the verify step.
     """
     phone_number = request.data.get("phone_number", "").strip().replace(" ", "")
     name         = request.data.get("name", "").strip()
@@ -404,10 +408,10 @@ def user_request_otp_signup(request):
     cache.set(f"otp_signup_name_{phone_number}", name, timeout=300)
     print(f"[OTP SIGNUP] Generated OTP {otp} for {phone_number} | name={name or '(none)'}")
 
-    sent, err_msg = _send_whatsapp_otp(phone_number, otp, name or "there")
+    sent, err_msg = _send_sms_otp(phone_number, otp)
 
     if not sent:
-        print(f"[OTP SIGNUP] AiSensy send failed for {phone_number}: {err_msg}")
+        print(f"[OTP SIGNUP] SMS send failed for {phone_number}: {err_msg}")
         return Response({
             "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
             "phone_number": phone_number,
@@ -415,7 +419,7 @@ def user_request_otp_signup(request):
         })
 
     return Response({
-        "message":      f"OTP sent to WhatsApp number ending in {phone_number[-4:]}",
+        "message":      f"OTP sent via SMS to number ending in {phone_number[-4:]}",
         "phone_number": phone_number,
     })
 
@@ -531,10 +535,10 @@ def user_login(request):
     cache.set(f"otp_{phone_number}", otp, timeout=300)
     print(f"[OTP] Generated OTP {otp} for {phone_number}")
 
-    sent, err_msg = _send_whatsapp_otp(phone_number, otp, name)
+    sent, err_msg = _send_sms_otp(phone_number, otp)
 
     if not sent:
-        print(f"[OTP] AiSensy send failed for {phone_number}: {err_msg}")
+        print(f"[OTP] SMS send failed for {phone_number}: {err_msg}")
         return Response({
             "message":      f"OTP generated for number ending in {phone_number[-4:]}. Check terminal.",
             "phone_number": phone_number,
@@ -543,7 +547,7 @@ def user_login(request):
         })
 
     return Response({
-        "message":      f"OTP sent to WhatsApp number ending in {phone_number[-4:]}",
+        "message":      f"OTP sent via SMS to number ending in {phone_number[-4:]}",
         "phone_number": phone_number,
         "requires_otp": True,
     })
