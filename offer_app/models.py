@@ -438,7 +438,12 @@ class CommonNotification(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255, help_text="Notification title e.g. 'Happy Vishu 🎉'")
     body = models.TextField(help_text="Notification body message")
-    image_url = models.URLField(blank=True, null=True, help_text="Optional image URL to show in notification")
+    image = models.ImageField(
+        upload_to='notification_images/',
+        blank=True, null=True,
+        help_text="Upload an image file (JPG/PNG/WebP, max 5 MB)"
+    )
+    image_url = models.URLField(blank=True, null=True, help_text="Optional image URL to show in notification (used when no file is uploaded)")
     target = models.CharField(max_length=20, choices=TARGET_CHOICES, default='all')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     scheduled_at = models.DateTimeField(blank=True, null=True, help_text="Leave blank to send immediately")
@@ -458,4 +463,3 @@ class CommonNotification(models.Model):
 
     def __str__(self):
         return f"{self.title} [{self.status}]"
-              

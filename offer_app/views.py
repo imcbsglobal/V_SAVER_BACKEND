@@ -1793,12 +1793,18 @@ def send_push_notification(request):
     if request.user.user_type != 'admin':
         return Response({'error': 'Admin access only'}, status=403)
 
-    title = request.data.get('title', '').strip()
-    body  = request.data.get('body', '').strip()
-    data  = request.data.get('data', {})
+    title     = request.data.get('title', '').strip()
+    body      = request.data.get('body', '').strip()
+    image_url = request.data.get('image_url', '').strip()
+    data      = request.data.get('data', {})
 
     if not title or not body:
         return Response({'error': 'title and body are required'}, status=400)
+
+    # Attach image URL to notification data if provided
+    if image_url:
+        data = dict(data)
+        data['imageUrl'] = image_url
 
     tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
     if not tokens:
@@ -1823,6 +1829,8 @@ def send_push_notification(request):
 class CommonNotificationListCreateView(generics.ListCreateAPIView):
     serializer_class   = CommonNotificationSerializer
     permission_classes = [IsAdminUser]
+    # Accept both JSON (image_url) and multipart (image file upload)
+    parser_classes     = [MultiPartParser, FormParser]
 
     def get_queryset(self):
         from datetime import timedelta
@@ -1835,8 +1843,8 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         scheduled_at = serializer.validated_data.get('scheduled_at')
-        status = 'scheduled' if scheduled_at else 'draft'
-        serializer.save(created_by=self.request.user, status=status)
+        status_val = 'scheduled' if scheduled_at else 'draft'
+        serializer.save(created_by=self.request.user, status=status_val)
 
 
 # ── Retrieve / Update / Delete ─────────────────────────────────
@@ -1878,8 +1886,17 @@ def send_common_notification(request, pk):
 
     if tokens:
         extra_data = {}
-        if notif.image_url:
-            extra_data['imageUrl'] = notif.image_url
+        # Resolve image: prefer uploaded file, fall back to URL string
+        resolved_image_url = None
+        if notif.image:
+            try:
+                resolved_image_url = request.build_absolute_uri(notif.image.url)
+            except Exception:
+                resolved_image_url = notif.image.url
+        elif notif.image_url:
+            resolved_image_url = notif.image_url
+        if resolved_image_url:
+            extra_data['imageUrl'] = resolved_image_url
 
         responses, dead_tokens = send_expo_push_notification(
             tokens, notif.title, notif.body, extra_data

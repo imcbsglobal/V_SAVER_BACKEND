@@ -50,7 +50,13 @@ def _fire_due_notifications():
 
             if tokens:
                 extra_data = {}
-                if notif.image_url:
+                # Prefer uploaded image file; fall back to plain URL
+                if notif.image:
+                    try:
+                        extra_data['imageUrl'] = notif.image.url
+                    except Exception:
+                        pass
+                elif notif.image_url:
                     extra_data['imageUrl'] = notif.image_url
 
                 _, dead_tokens = send_expo_push_notification(

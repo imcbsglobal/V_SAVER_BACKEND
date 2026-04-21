@@ -735,16 +735,75 @@ class AccInvMastSerializer(serializers.ModelSerializer):
         read_only_fields = fields
         
 class CommonNotificationSerializer(serializers.ModelSerializer):
+    """
+    Handles both image-file upload (multipart/form-data) and plain image_url (JSON).
+    The frontend reads `resolved_image_url` — it returns whichever source is set.
+    """
     created_by_name = serializers.SerializerMethodField()
+    # Write-only upload field
+    image = serializers.ImageField(write_only=True, required=False, allow_null=True)
+    # Read-only resolved URL (file or URL string, whichever is set)
+    resolved_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = CommonNotification
         fields = [
-            'id', 'title', 'body', 'image_url', 'target',
+            'id', 'title', 'body',
+            'image',               # write-only file upload
+            'image_url',           # write-only URL string
+            'resolved_image_url',  # read-only: file URL or image_url
+            'target',
             'status', 'scheduled_at', 'sent_at', 'sent_count',
-            'created_by', 'created_by_name', 'created_at', 'updated_at'
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['status', 'sent_at', 'sent_count', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = [
+            'status', 'sent_at', 'sent_count', 'created_by',
+            'created_at', 'updated_at', 'resolved_image_url',
+        ]
 
     def get_created_by_name(self, obj):
-        return obj.created_by.username if obj.created_by else None        
+        return obj.created_by.username if obj.created_by else None
+
+    def get_resolved_image_url(self, obj):
+        """
+        Return absolute URL of the notification image.
+        Tries the uploaded file first (obj.image), falls back to obj.image_url.
+        Wrapped in try/except so it doesn't crash if the migration hasn't been run yet.
+        """
+        request = self.context.get('request')
+        try:
+            if obj.image and obj.image.name:
+                return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+        except Exception:
+            pass
+        return obj.image_url or None
+
+    def validate(self, data):
+        image_file = data.get('image')
+        if image_file:
+            if image_file.size > 5 * 1024 * 1024:
+                raise serializers.ValidationError({'image': 'Image must be smaller than 5 MB.'})
+            allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+            if image_file.content_type not in allowed:
+                raise serializers.ValidationError(
+                    {'image': 'Unsupported type. Use JPG, PNG, GIF, or WebP.'}
+                )
+        return data
+
+    def create(self, validated_data):
+        image_file = validated_data.pop('image', None)
+        instance = super().create(validated_data)
+        if image_file:
+            instance.image = image_file
+            instance.image_url = None  # file takes priority over URL
+            instance.save(update_fields=['image', 'image_url'])
+        return instance
+
+    def update(self, instance, validated_data):
+        image_file = validated_data.pop('image', None)
+        instance = super().update(instance, validated_data)
+        if image_file:
+            instance.image = image_file
+            instance.image_url = None
+            instance.save(update_fields=['image', 'image_url'])
+        return instance
