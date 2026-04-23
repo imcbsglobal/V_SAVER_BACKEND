@@ -95,11 +95,12 @@ def _activate_scheduled_offers():
     devices — exactly the notification that was skipped at creation time
     because the offer was not yet live.
     """
-    from django.utils.timezone import localdate
+    from django.utils.timezone import localdate, localtime
     from .models import OfferMaster, ExpoPushToken
     from .push_notifications import send_expo_push_notification
 
-    today = localdate()
+    today    = localdate()
+    now_time = localtime().time().replace(second=0, microsecond=0)
 
     due_offers = OfferMaster.objects.filter(
         status='scheduled',
@@ -112,6 +113,11 @@ def _activate_scheduled_offers():
 
     for offer in due_offers:
         try:
+            # Skip hourly offers that are outside their time window
+            if offer.offer_start_time and offer.offer_end_time:
+                if not (offer.offer_start_time <= now_time <= offer.offer_end_time):
+                    continue
+
             # Activate the offer
             offer.status = 'active'
             offer.save(update_fields=['status'])

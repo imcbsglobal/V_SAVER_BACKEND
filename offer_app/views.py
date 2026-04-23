@@ -60,7 +60,7 @@ def auto_expire_offers():
             if now_time < offer.offer_start_time:
                 new_status = 'scheduled'
             elif now_time > offer.offer_end_time:
-                new_status = 'inactive'
+                new_status = 'scheduled'
             else:
                 new_status = 'active'
         else:
@@ -76,6 +76,19 @@ def auto_expire_offers():
 class IsAdminUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.user_type == "admin"
+
+
+class IsAdminOrReadOnly(permissions.BasePermission):
+    """
+    Authenticated users can read (GET, HEAD, OPTIONS).
+    Only admin users can write (POST, PUT, PATCH, DELETE).
+    """
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        if request.method in permissions.SAFE_METHODS:  # GET, HEAD, OPTIONS
+            return True
+        return request.user.user_type == "admin"
 
 
 def _block_if_disabled(user):
@@ -1828,7 +1841,7 @@ def send_push_notification(request):
 # ── List / Create ──────────────────────────────────────────────
 class CommonNotificationListCreateView(generics.ListCreateAPIView):
     serializer_class   = CommonNotificationSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrReadOnly]
     # Accept both JSON (image_url) and multipart (image file upload)
     parser_classes     = [MultiPartParser, FormParser]
 
@@ -1897,7 +1910,7 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
 # ── Retrieve / Update / Delete ─────────────────────────────────
 class CommonNotificationDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = CommonNotificationSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrReadOnly]
     queryset = CommonNotification.objects.all()
     lookup_field = 'pk'
 
