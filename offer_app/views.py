@@ -1841,10 +1841,57 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
             sent_at__lt=cutoff,
         ).order_by('-created_at')
 
-    def perform_create(self, serializer):
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
         scheduled_at = serializer.validated_data.get('scheduled_at')
-        status_val = 'scheduled' if scheduled_at else 'draft'
-        serializer.save(created_by=self.request.user, status=status_val)
+
+        if scheduled_at:
+            # Save as scheduled — the APScheduler job will fire it later
+            notif = serializer.save(created_by=request.user, status='scheduled')
+            return Response(
+                self.get_serializer(notif).data,
+                status=status.HTTP_201_CREATED,
+            )
+
+        # No scheduled_at → save and send immediately
+        notif = serializer.save(created_by=request.user, status='draft')
+
+        token_qs = ExpoPushToken.objects.select_related('user')
+        if notif.target == 'active':
+            token_qs = token_qs.filter(user__status='Active')
+
+        tokens = list(token_qs.values_list('token', flat=True))
+        dead_tokens = []
+        sent_count = 0
+
+        if tokens:
+            extra_data = {}
+            if notif.image:
+                try:
+                    extra_data['imageUrl'] = request.build_absolute_uri(notif.image.url)
+                except Exception:
+                    extra_data['imageUrl'] = notif.image.url
+            elif notif.image_url:
+                extra_data['imageUrl'] = notif.image_url
+
+            _, dead_tokens = send_expo_push_notification(
+                tokens, notif.title, notif.body, extra_data
+            )
+            if dead_tokens:
+                ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+            sent_count = len(tokens) - len(dead_tokens)
+
+        notif.status = 'sent'
+        notif.sent_at = timezone.now()
+        notif.sent_count = sent_count
+        notif.save(update_fields=['status', 'sent_at', 'sent_count'])
+
+        return Response(
+            self.get_serializer(notif).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # ── Retrieve / Update / Delete ─────────────────────────────────

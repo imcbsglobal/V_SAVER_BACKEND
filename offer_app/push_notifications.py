@@ -17,20 +17,41 @@ def send_expo_push_notification(tokens: list, title: str, body: str, data: dict 
     all_responses = []
     dead_tokens = []
 
+    # Extract imageUrl from data dict if present (passed by views.py as extra_data)
+    payload_data = dict(data) if data else {}
+    image_url = payload_data.pop("imageUrl", None)
+
     # Split tokens into batches of 100
     for i in range(0, len(tokens), BATCH_SIZE):
         batch = tokens[i:i + BATCH_SIZE]
 
-        messages = [
-            {
+        messages = []
+        for token in batch:
+            message = {
                 "to": token,
                 "title": title,
                 "body": body,
-                "data": data or {},
+                "data": payload_data,
                 "sound": "default",
             }
-            for token in batch
-        ]
+
+            # ✅ Correct structure so image shows in notification drawer on Android & iOS
+            if image_url:
+                message["android"] = {
+                    "imageUrl": image_url,
+                }
+                message["apns"] = {
+                    "payload": {
+                        "aps": {
+                            "mutable-content": 1,
+                        }
+                    },
+                    "fcm_options": {
+                        "image": image_url,
+                    },
+                }
+
+            messages.append(message)
 
         try:
             response = requests.post(EXPO_PUSH_URL, json=messages, headers=headers, timeout=10)
