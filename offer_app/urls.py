@@ -69,6 +69,7 @@ urlpatterns = [
 
     # ---------- USER INVOICES ----------
     path('invoices/my/', views.user_invoices, name='user-invoices'),
+    path('invoices/my/<int:slno>/', views.user_invoice_bill, name='user-invoice-bill'),
 
     # ---------- ADMIN ----------
     path('admins/stats/', views.AdminStatsView.as_view(), name='admin-stats'),

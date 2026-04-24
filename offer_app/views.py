@@ -7,6 +7,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
 from django.utils import timezone
+from .fcm_notifications import send_fcm_notification_with_image
 import secrets
 import random
 import string
@@ -1368,6 +1369,86 @@ def user_invoices(request):
     })
 
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def user_invoice_bill(request, slno):
+    """
+    GET /api/invoices/my/<slno>/
+    Returns a single invoice bill for the logged-in user.
+    Users can only see their own invoices — matched via debtor code or phone number.
+    Admins can see any invoice under their client_id.
+    """
+    user = request.user
+
+    # ── Admin path ───────────────────────────────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        admin_client_id = getattr(user, 'client_id', '') or ''
+        try:
+            invoice = AccInvMast.objects.get(slno=slno, client_id=admin_client_id)
+        except AccInvMast.DoesNotExist:
+            return Response({'error': 'Invoice not found.'}, status=status.HTTP_404_NOT_FOUND)
+        customer = AccMaster.objects.filter(code=invoice.customerid, client_id=admin_client_id).first()
+        return Response({
+            'success':        True,
+            'slno':           invoice.slno,
+            'invdate':        str(invoice.invdate) if invoice.invdate else None,
+            'nettotal':       str(invoice.nettotal) if invoice.nettotal else '0',
+            'customerid':     invoice.customerid,
+            'customer_name':  customer.name  if customer else '',
+            'customer_place': customer.place if customer else '',
+        })
+
+    # ── User path: derive debtor code from username ──────────────────────────
+    debtor_code = ''
+    username = getattr(user, 'username', '') or ''
+    if username.startswith('debtor_'):
+        inner       = username[len('debtor_'):]
+        parts       = inner.rsplit('_', 1)
+        debtor_code = parts[0] if len(parts) == 2 else inner
+
+    # Fallback: match via phone number in AccMaster
+    if not debtor_code:
+        phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+        if len(phone) > 10:
+            phone = phone[-10:]
+        if phone:
+            acc = AccMaster.objects.filter(phone2__endswith=phone).first()
+            if acc:
+                debtor_code = acc.code
+
+    if not debtor_code:
+        return Response(
+            {'error': 'Could not determine your customer account. Please contact admin.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        invoice = AccInvMast.objects.get(slno=slno, customerid=debtor_code)
+    except AccInvMast.DoesNotExist:
+        return Response(
+            {'error': 'Invoice not found or does not belong to your account.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Pull customer name/place from AccMaster for the bill header
+    customer_name  = ''
+    customer_place = ''
+    acc = AccMaster.objects.filter(code=debtor_code, client_id=invoice.client_id).first()
+    if acc:
+        customer_name  = acc.name  or ''
+        customer_place = acc.place or ''
+
+    return Response({
+        'success':        True,
+        'slno':           invoice.slno,
+        'invdate':        str(invoice.invdate) if invoice.invdate else None,
+        'nettotal':       str(invoice.nettotal) if invoice.nettotal else '0',
+        'customerid':     invoice.customerid,
+        'customer_name':  customer_name,
+        'customer_place': customer_place,
+    })
+
+
 # ================================================================
 # ===================== SYNC DATA VIEWS ==========================
 # ================================================================
@@ -1785,18 +1866,59 @@ def branch_detail(request, pk):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def register_push_token(request):
-    """Mobile app calls this to save/update the Expo push token."""
     token       = request.data.get('token', '').strip()
-    device_type = request.data.get('device_type', '').strip()  # 'ios' or 'android'
+    fcm_token   = request.data.get('fcm_token', '').strip()
+    device_type = request.data.get('device_type', '').strip()
 
     if not token:
         return Response({'error': 'token is required'}, status=400)
 
+    defaults = {'user': request.user, 'device_type': device_type}
+    if fcm_token:
+        defaults['fcm_token'] = fcm_token
+
     obj, created = ExpoPushToken.objects.update_or_create(
         token=token,
-        defaults={'user': request.user, 'device_type': device_type}
+        defaults=defaults,
     )
     return Response({'message': 'Token registered', 'created': created})
+
+
+def _send_common_notification(notif, request=None):
+    from .fcm_notifications import send_fcm_notification_with_image
+
+    image_url = None
+    if notif.image:
+        try:
+            image_url = request.build_absolute_uri(notif.image.url) if request else notif.image.url
+        except Exception:
+            image_url = notif.image.url
+    elif notif.image_url:
+        image_url = notif.image_url
+
+    token_qs = ExpoPushToken.objects.select_related('user')
+    if notif.target == 'active':
+        token_qs = token_qs.filter(user__status='Active')
+
+    fcm_tokens = list(
+        token_qs.exclude(fcm_token__isnull=True)
+                .exclude(fcm_token='')
+                .values_list('fcm_token', flat=True)
+    )
+
+    sent_count       = 0
+    dead_token_count = 0
+
+    if fcm_tokens:
+        fcm_sent, fcm_dead = send_fcm_notification_with_image(
+            fcm_tokens, notif.title, notif.body, image_url
+        )
+        sent_count += fcm_sent
+        dead_token_count += len(fcm_dead)
+        if fcm_dead:
+            ExpoPushToken.objects.filter(fcm_token__in=fcm_dead).delete()
+
+    return sent_count, dead_token_count
 
 
 @api_view(['POST'])
@@ -1868,36 +1990,17 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
                 status=status.HTTP_201_CREATED,
             )
 
-        # No scheduled_at → save and send immediately
-        notif = serializer.save(created_by=request.user, status='draft')
+        # No scheduled_at → send immediately, never leave as draft
+        now = timezone.now()
+        notif = serializer.save(created_by=request.user, status='sent')
 
-        token_qs = ExpoPushToken.objects.select_related('user')
-        if notif.target == 'active':
-            token_qs = token_qs.filter(user__status='Active')
+        try:
+            sent_count, _ = _send_common_notification(notif, request=request)
+        except Exception:
+            sent_count = 0
 
-        tokens = list(token_qs.values_list('token', flat=True))
-        dead_tokens = []
-        sent_count = 0
-
-        if tokens:
-            extra_data = {}
-            if notif.image:
-                try:
-                    extra_data['imageUrl'] = request.build_absolute_uri(notif.image.url)
-                except Exception:
-                    extra_data['imageUrl'] = notif.image.url
-            elif notif.image_url:
-                extra_data['imageUrl'] = notif.image_url
-
-            _, dead_tokens = send_expo_push_notification(
-                tokens, notif.title, notif.body, extra_data
-            )
-            if dead_tokens:
-                ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
-            sent_count = len(tokens) - len(dead_tokens)
-
-        notif.status = 'sent'
-        notif.sent_at = timezone.now()
+        notif.status     = 'sent'
+        notif.sent_at    = now
         notif.sent_count = sent_count
         notif.save(update_fields=['status', 'sent_at', 'sent_count'])
 
@@ -1934,53 +2037,20 @@ def send_common_notification(request, pk):
     if notif.status == 'sent':
         return Response({'error': 'This notification has already been sent.'}, status=400)
 
-    # Determine token queryset based on target
-    token_qs = ExpoPushToken.objects.select_related('user')
-    if notif.target == 'active':
-        token_qs = token_qs.filter(user__status='Active')
+    sent_count, dead_count = _send_common_notification(notif, request=request)
 
-    tokens = list(token_qs.values_list('token', flat=True))
-
-    dead_tokens = []
-    sent_count  = 0
-
-    if tokens:
-        extra_data = {}
-        # Resolve image: prefer uploaded file, fall back to URL string
-        resolved_image_url = None
-        if notif.image:
-            try:
-                resolved_image_url = request.build_absolute_uri(notif.image.url)
-            except Exception:
-                resolved_image_url = notif.image.url
-        elif notif.image_url:
-            resolved_image_url = notif.image_url
-        if resolved_image_url:
-            extra_data['imageUrl'] = resolved_image_url
-
-        responses, dead_tokens = send_expo_push_notification(
-            tokens, notif.title, notif.body, extra_data
-        )
-
-        # Clean up dead tokens
-        if dead_tokens:
-            ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
-
-        sent_count = len(tokens) - len(dead_tokens)
-
-    # Mark as sent regardless of token count
-    notif.status   = 'sent'
-    notif.sent_at  = timezone.now()
+    notif.status     = 'sent'
+    notif.sent_at    = timezone.now()
     notif.sent_count = sent_count
     notif.save(update_fields=['status', 'sent_at', 'sent_count'])
 
-    if not tokens:
+    if sent_count == 0 and dead_count == 0:
         return Response({
-            'message':            'Notification marked as sent. No devices are registered for push notifications yet.',
+            'message':            'Notification marked as sent. No FCM tokens are registered yet.',
             'dead_tokens_cleaned': 0,
         })
 
     return Response({
         'message':            f'Notification sent to {sent_count} device(s).',
-        'dead_tokens_cleaned': len(dead_tokens),
+        'dead_tokens_cleaned': dead_count,
     })

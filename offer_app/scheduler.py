@@ -8,6 +8,10 @@ Uses APScheduler's BackgroundScheduler (runs in a daemon thread inside the
 Django process — no separate worker or Redis needed).
 
 Started once from AppConfig.ready() so it survives server restarts.
+
+Notification routing:
+  • CommonNotification (with or without image) → FCM via send_fcm_notification_with_image
+  • OfferMaster push notifications             → Expo push (unchanged)
 """
 
 import logging
@@ -22,11 +26,10 @@ def _fire_due_notifications():
     Finds every CommonNotification that:
       - status == 'scheduled'
       - scheduled_at <= now
-    and sends it using the same logic as send_common_notification().
+    and sends it via FCM (supports image + no-image).
     """
-    # Import here (inside the job) to avoid AppRegistryNotReady at startup
     from .models import CommonNotification, ExpoPushToken
-    from .push_notifications import send_expo_push_notification
+    from .fcm_notifications import send_fcm_notification_with_image
 
     now = timezone.now()
 
@@ -44,37 +47,41 @@ def _fire_due_notifications():
             if notif.target == 'active':
                 token_qs = token_qs.filter(user__status='Active')
 
-            tokens = list(token_qs.values_list('token', flat=True))
-            dead_tokens = []
-            sent_count = 0
+            # Only devices that have an FCM token
+            fcm_tokens = list(
+                token_qs.exclude(fcm_token__isnull=True)
+                        .exclude(fcm_token='')
+                        .values_list('fcm_token', flat=True)
+            )
 
-            if tokens:
-                extra_data = {}
-                # Prefer uploaded image file; fall back to plain URL
+            sent_count  = 0
+            dead_tokens = []
+
+            if fcm_tokens:
+                # Resolve image URL (prefer uploaded file, fall back to plain URL)
+                image_url = None
                 if notif.image:
                     try:
-                        extra_data['imageUrl'] = notif.image.url
+                        image_url = notif.image.url
                     except Exception:
                         pass
                 elif notif.image_url:
-                    extra_data['imageUrl'] = notif.image_url
+                    image_url = notif.image_url
 
-                _, dead_tokens = send_expo_push_notification(
-                    tokens, notif.title, notif.body, extra_data
+                sent_count, dead_tokens = send_fcm_notification_with_image(
+                    fcm_tokens, notif.title, notif.body, image_url
                 )
 
                 if dead_tokens:
-                    ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+                    ExpoPushToken.objects.filter(fcm_token__in=dead_tokens).delete()
 
-                sent_count = len(tokens) - len(dead_tokens)
-
-            notif.status = 'sent'
-            notif.sent_at = now
+            notif.status     = 'sent'
+            notif.sent_at    = now
             notif.sent_count = sent_count
             notif.save(update_fields=['status', 'sent_at', 'sent_count'])
 
             logger.info(
-                "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s).",
+                "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM.",
                 notif.title, notif.id, sent_count,
             )
 
@@ -91,9 +98,8 @@ def _activate_scheduled_offers():
       - status == 'scheduled'
       - valid_from <= today   (offer window has started)
       - valid_to   >= today   (offer window has not yet expired)
-    Marks them 'active' and sends a push notification to all registered
-    devices — exactly the notification that was skipped at creation time
-    because the offer was not yet live.
+    Marks them 'active' and sends a push notification via Expo push
+    (OfferMaster notifications are NOT routed through FCM — unchanged).
     """
     from django.utils.timezone import localdate, localtime
     from .models import OfferMaster, ExpoPushToken
@@ -127,7 +133,7 @@ def _activate_scheduled_offers():
                 offer.title, offer.id,
             )
 
-            # Send push notification now that the offer is live
+            # Send push notification via Expo (unchanged)
             tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
             if tokens:
                 notif_title = f"🛍️ New Offer: {offer.title}"
@@ -145,7 +151,7 @@ def _activate_scheduled_offers():
                     ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
 
                 logger.info(
-                    "[Scheduler] Push sent to %d device(s) for offer '%s'.",
+                    "[Scheduler] Expo push sent to %d device(s) for offer '%s'.",
                     len(tokens) - len(dead_tokens), offer.title,
                 )
 
@@ -197,14 +203,14 @@ def start():
         _fire_due_notifications,
         trigger=IntervalTrigger(seconds=60),
         id='fire_due_notifications',
-        name='Fire due common notifications',
+        name='Fire due common notifications (FCM)',
         replace_existing=True,
     )
     scheduler.add_job(
         _activate_scheduled_offers,
         trigger=IntervalTrigger(seconds=60),
         id='activate_scheduled_offers',
-        name='Activate scheduled OfferMasters and send push notifications',
+        name='Activate scheduled OfferMasters and send Expo push notifications',
         replace_existing=True,
     )
     scheduler.add_job(

@@ -222,3 +222,5 @@ AWS_S3_CUSTOM_DOMAIN = _r2_public.replace("https://", "").replace("http://", "")
 
 # ✅ FIXED: only one MEDIA_URL — the R2 public URL (removed the conflicting /media/ line above)
 MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
+
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")

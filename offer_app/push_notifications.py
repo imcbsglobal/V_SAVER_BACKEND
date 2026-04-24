@@ -35,19 +35,19 @@ def send_expo_push_notification(tokens: list, title: str, body: str, data: dict 
                 "sound": "default",
             }
 
-            # ✅ Correct structure so image shows in notification drawer on Android & iOS
             if image_url:
+                message["image"] = image_url      # ✅ TOP LEVEL — Expo reads this to attach image
                 message["android"] = {
-                    "imageUrl": image_url,
+                    "imageUrl": image_url,         # ✅ Android FCM rich notification
                 }
                 message["apns"] = {
                     "payload": {
                         "aps": {
-                            "mutable-content": 1,
+                            "mutable-content": 1,  # ✅ Required for iOS rich notifications
                         }
                     },
                     "fcm_options": {
-                        "image": image_url,
+                        "image": image_url,        # ✅ iOS via FCM
                     },
                 }
 
