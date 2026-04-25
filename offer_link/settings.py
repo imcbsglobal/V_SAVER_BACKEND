@@ -75,6 +75,7 @@ DATABASES = {
         'PASSWORD': os.environ.get('DB_PASSWORD'),
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT'),
+        'CONN_MAX_AGE': 0,  # Prevents stale connection errors in scheduler
     }
 }
 
@@ -149,7 +150,6 @@ SIMPLE_JWT = {
 }
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
-# ✅ FIXED
 CORS_ALLOWED_ORIGINS = os.environ.get(
     'CORS_ALLOWED_ORIGINS',
     'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://192.168.1.44:5173,http://192.168.1.44:3000'
@@ -196,6 +196,9 @@ LOGGING = {
     },
 }
 
+# ─── Firebase ─────────────────────────────────────────────────────────────────
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON', '')
+
 # ─── Cloudflare R2 Storage ────────────────────────────────────────────────────
 STORAGES = {
     "default": {
@@ -222,5 +225,3 @@ AWS_S3_CUSTOM_DOMAIN = _r2_public.replace("https://", "").replace("http://", "")
 
 # ✅ FIXED: only one MEDIA_URL — the R2 public URL (removed the conflicting /media/ line above)
 MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
-
-FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")

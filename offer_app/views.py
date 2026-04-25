@@ -1866,9 +1866,9 @@ def branch_detail(request, pk):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def register_push_token(request):
-    token       = request.data.get('token', '').strip()
-    fcm_token   = request.data.get('fcm_token', '').strip()
-    device_type = request.data.get('device_type', '').strip()
+    token       = (request.data.get('token')       or '').strip()
+    fcm_token   = (request.data.get('fcm_token')   or '').strip()
+    device_type = (request.data.get('device_type') or '').strip()
 
     if not token:
         return Response({'error': 'token is required'}, status=400)
@@ -1885,8 +1885,10 @@ def register_push_token(request):
 
 
 def _send_common_notification(notif, request=None):
+    from .push_notifications import send_expo_push_notification
     from .fcm_notifications import send_fcm_notification_with_image
 
+    # Resolve image URL
     image_url = None
     if notif.image:
         try:
@@ -1900,23 +1902,35 @@ def _send_common_notification(notif, request=None):
     if notif.target == 'active':
         token_qs = token_qs.filter(user__status='Active')
 
-    fcm_tokens = list(
-        token_qs.exclude(fcm_token__isnull=True)
-                .exclude(fcm_token='')
-                .values_list('fcm_token', flat=True)
-    )
-
     sent_count       = 0
     dead_token_count = 0
 
-    if fcm_tokens:
-        fcm_sent, fcm_dead = send_fcm_notification_with_image(
-            fcm_tokens, notif.title, notif.body, image_url
+    if image_url:
+        # ── Has image → FCM V1 ──────────────────────────────────────────────
+        fcm_tokens = list(
+            token_qs.exclude(fcm_token__isnull=True)
+                    .exclude(fcm_token='')
+                    .values_list('fcm_token', flat=True)
         )
-        sent_count += fcm_sent
-        dead_token_count += len(fcm_dead)
-        if fcm_dead:
-            ExpoPushToken.objects.filter(fcm_token__in=fcm_dead).delete()
+        if fcm_tokens:
+            fcm_sent, fcm_dead = send_fcm_notification_with_image(
+                fcm_tokens, notif.title, notif.body, image_url
+            )
+            sent_count += fcm_sent
+            dead_token_count += len(fcm_dead)
+            if fcm_dead:
+                ExpoPushToken.objects.filter(fcm_token__in=fcm_dead).delete()
+    else:
+        # ── No image → Expo push (reaches all 10 devices) ───────────────────
+        expo_tokens = list(token_qs.values_list('token', flat=True))
+        if expo_tokens:
+            _, dead_tokens = send_expo_push_notification(
+                expo_tokens, notif.title, notif.body, {}
+            )
+            if dead_tokens:
+                ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+            sent_count = len(expo_tokens) - len(dead_tokens)
+            dead_token_count = len(dead_tokens)
 
     return sent_count, dead_token_count
 
@@ -1991,12 +2005,14 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
             )
 
         # No scheduled_at → send immediately, never leave as draft
-        now = timezone.now()
-        notif = serializer.save(created_by=request.user, status='sent')
+        now   = timezone.now()
+        notif = serializer.save(created_by=request.user, status='draft')
 
         try:
             sent_count, _ = _send_common_notification(notif, request=request)
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("_send_common_notification failed: %s", e)
             sent_count = 0
 
         notif.status     = 'sent'
@@ -2012,13 +2028,10 @@ class CommonNotificationListCreateView(generics.ListCreateAPIView):
 
 # ── Retrieve / Update / Delete ─────────────────────────────────
 class CommonNotificationDetailView(generics.RetrieveUpdateDestroyAPIView):
-    serializer_class = CommonNotificationSerializer
+    serializer_class   = CommonNotificationSerializer
     permission_classes = [IsAdminOrReadOnly]
-    queryset = CommonNotification.objects.all()
-    lookup_field = 'pk'
-
-    def get_serializer_class(self):
-        return CommonNotificationSerializer
+    queryset           = CommonNotification.objects.all()
+    lookup_field       = 'pk'
 
 
 # ── Send Now ───────────────────────────────────────────────────
@@ -2046,11 +2059,11 @@ def send_common_notification(request, pk):
 
     if sent_count == 0 and dead_count == 0:
         return Response({
-            'message':            'Notification marked as sent. No FCM tokens are registered yet.',
+            'message':             'Notification marked as sent. No FCM tokens are registered yet.',
             'dead_tokens_cleaned': 0,
         })
 
     return Response({
-        'message':            f'Notification sent to {sent_count} device(s).',
+        'message':             f'Notification sent to {sent_count} device(s).',
         'dead_tokens_cleaned': dead_count,
     })

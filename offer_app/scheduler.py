@@ -10,8 +10,9 @@ Django process — no separate worker or Redis needed).
 Started once from AppConfig.ready() so it survives server restarts.
 
 Notification routing:
-  • CommonNotification (with or without image) → FCM via send_fcm_notification_with_image
-  • OfferMaster push notifications             → Expo push (unchanged)
+  • CommonNotification WITHOUT image → Expo push (works for all 10 devices)
+  • CommonNotification WITH image    → FCM V1 (requires fcm_token in DB)
+  • OfferMaster push notifications   → Expo push (unchanged)
 """
 
 import logging
@@ -26,10 +27,13 @@ def _fire_due_notifications():
     Finds every CommonNotification that:
       - status == 'scheduled'
       - scheduled_at <= now
-    and sends it via FCM (supports image + no-image).
+    and sends it:
+      - No image → Expo push (reaches all devices)
+      - With image → FCM V1 (reaches devices with fcm_token)
     """
     from .models import CommonNotification, ExpoPushToken
     from .fcm_notifications import send_fcm_notification_with_image
+    from .push_notifications import send_expo_push_notification
 
     now = timezone.now()
 
@@ -47,43 +51,58 @@ def _fire_due_notifications():
             if notif.target == 'active':
                 token_qs = token_qs.filter(user__status='Active')
 
-            # Only devices that have an FCM token
-            fcm_tokens = list(
-                token_qs.exclude(fcm_token__isnull=True)
-                        .exclude(fcm_token='')
-                        .values_list('fcm_token', flat=True)
-            )
+            # Resolve image URL
+            image_url = None
+            if notif.image:
+                try:
+                    image_url = notif.image.url
+                except Exception:
+                    pass
+            elif notif.image_url:
+                image_url = notif.image_url
 
             sent_count  = 0
             dead_tokens = []
 
-            if fcm_tokens:
-                # Resolve image URL (prefer uploaded file, fall back to plain URL)
-                image_url = None
-                if notif.image:
-                    try:
-                        image_url = notif.image.url
-                    except Exception:
-                        pass
-                elif notif.image_url:
-                    image_url = notif.image_url
+            if image_url:
+                # ── Has image → FCM V1 ──────────────────────────────────────
+                fcm_tokens = list(
+                    token_qs.exclude(fcm_token__isnull=True)
+                            .exclude(fcm_token='')
+                            .values_list('fcm_token', flat=True)
+                )
+                if fcm_tokens:
+                    sent_count, dead_tokens = send_fcm_notification_with_image(
+                        fcm_tokens, notif.title, notif.body, image_url
+                    )
+                    if dead_tokens:
+                        ExpoPushToken.objects.filter(fcm_token__in=dead_tokens).delete()
 
-                sent_count, dead_tokens = send_fcm_notification_with_image(
-                    fcm_tokens, notif.title, notif.body, image_url
+                logger.info(
+                    "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM.",
+                    notif.title, notif.id, sent_count,
                 )
 
-                if dead_tokens:
-                    ExpoPushToken.objects.filter(fcm_token__in=dead_tokens).delete()
+            else:
+                # ── No image → Expo push (reaches all devices) ──────────────
+                expo_tokens = list(token_qs.values_list('token', flat=True))
+                if expo_tokens:
+                    _, dead_tokens = send_expo_push_notification(
+                        expo_tokens, notif.title, notif.body, {}
+                    )
+                    if dead_tokens:
+                        ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+                    sent_count = len(expo_tokens) - len(dead_tokens)
+
+                logger.info(
+                    "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via Expo.",
+                    notif.title, notif.id, sent_count,
+                )
 
             notif.status     = 'sent'
             notif.sent_at    = now
             notif.sent_count = sent_count
             notif.save(update_fields=['status', 'sent_at', 'sent_count'])
-
-            logger.info(
-                "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM.",
-                notif.title, notif.id, sent_count,
-            )
 
         except Exception as exc:
             logger.exception(
@@ -203,7 +222,7 @@ def start():
         _fire_due_notifications,
         trigger=IntervalTrigger(seconds=60),
         id='fire_due_notifications',
-        name='Fire due common notifications (FCM)',
+        name='Fire due common notifications (FCM/Expo)',
         replace_existing=True,
     )
     scheduler.add_job(
