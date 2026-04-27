@@ -106,4 +106,5 @@ urlpatterns = [
     # ---------- PDF INVOICES ----------
     path('pdf-invoices/upload/', upload_pdf_invoice, name='pdf-invoice-upload'),
     path('pdf-invoices/', list_pdf_invoices, name='pdf-invoice-list'),
+    
 ]
