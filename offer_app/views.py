@@ -1449,6 +1449,116 @@ def user_invoice_bill(request, slno):
     })
 
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def invoice_history(request):
+    """
+    GET /api/invoices/history/
+
+    Returns paginated invoice history for a customer, showing invdate,
+    customerid, and nettotal.
+
+    Query params:
+      - customer_id : (admin only) filter by a specific customerid
+      - from_date   : filter invoices on or after this date (YYYY-MM-DD)
+      - to_date     : filter invoices on or before this date (YYYY-MM-DD)
+      - page        : page number (default 1)
+      - page_size   : results per page (default 20, max 100)
+
+    Regular users see only their own invoices (derived from their username
+    or phone number). Admins see all invoices under their client_id and can
+    optionally pass customer_id to narrow results.
+    """
+    user = request.user
+
+    # ── Resolve queryset based on user role ──────────────────────────────────
+    if user.is_superuser or user.user_type == 'admin':
+        admin_client_id = (getattr(user, 'client_id', '') or '').strip()
+        if not admin_client_id:
+            return Response({'error': 'Admin account has no client_id.'}, status=400)
+
+        qs = AccInvMast.objects.filter(client_id=admin_client_id)
+
+        customer_id = request.query_params.get('customer_id', '').strip()
+        if customer_id:
+            qs = qs.filter(customerid=customer_id)
+
+    else:
+        # Derive debtor code from username (e.g. "debtor_CODE_phone")
+        debtor_code = ''
+        username = (getattr(user, 'username', '') or '')
+        if username.startswith('debtor_'):
+            inner = username[len('debtor_'):]
+            parts = inner.rsplit('_', 1)
+            debtor_code = parts[0] if len(parts) == 2 else inner
+
+        # Fallback: match via phone number in AccMaster
+        if not debtor_code:
+            phone = (getattr(user, 'phone_number', '') or '').strip().lstrip('+')
+            if len(phone) > 10:
+                phone = phone[-10:]
+            if phone:
+                acc = AccMaster.objects.filter(phone2__endswith=phone).first()
+                if acc:
+                    debtor_code = acc.code
+
+        if not debtor_code:
+            return Response(
+                {'error': 'Could not determine customer code for this account.'},
+                status=400,
+            )
+
+        qs = AccInvMast.objects.filter(customerid=debtor_code)
+
+    # ── Date filters ─────────────────────────────────────────────────────────
+    from_date = request.query_params.get('from_date', '').strip()
+    to_date   = request.query_params.get('to_date', '').strip()
+
+    if from_date:
+        try:
+            qs = qs.filter(invdate__gte=from_date)
+        except Exception:
+            return Response({'error': 'Invalid from_date. Use YYYY-MM-DD.'}, status=400)
+
+    if to_date:
+        try:
+            qs = qs.filter(invdate__lte=to_date)
+        except Exception:
+            return Response({'error': 'Invalid to_date. Use YYYY-MM-DD.'}, status=400)
+
+    qs = qs.order_by('-invdate', '-slno')
+
+    # ── Pagination ────────────────────────────────────────────────────────────
+    try:
+        page      = max(1, int(request.query_params.get('page', 1)))
+        page_size = min(int(request.query_params.get('page_size', 20)), 100)
+    except ValueError:
+        return Response({'error': 'page and page_size must be integers.'}, status=400)
+
+    total  = qs.count()
+    start  = (page - 1) * page_size
+    sliced = qs.values('slno', 'invdate', 'customerid', 'nettotal')[start:start + page_size]
+
+    results = [
+        {
+            'slno':       inv['slno'],
+            'invdate':    str(inv['invdate']) if inv['invdate'] else None,
+            'customerid': inv['customerid'],
+            'nettotal':   str(inv['nettotal']) if inv['nettotal'] else '0.000',
+        }
+        for inv in sliced
+    ]
+
+    return Response({
+        'success':     True,
+        'total':       total,
+        'page':        page,
+        'page_size':   page_size,
+        'total_pages': (total + page_size - 1) // page_size if total else 0,
+        'results':     results,
+    })
+
+
 # ================================================================
 # ===================== SYNC DATA VIEWS ==========================
 # ================================================================
@@ -1863,6 +1973,34 @@ def branch_detail(request, pk):
 
 # ===================== PUSH NOTIFICATIONS =====================
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def list_fcm_tokens(request):
+    """Admin-only: list all registered FCM tokens with user info."""
+    if request.user.user_type != 'admin' and not request.user.is_superuser:
+        return Response({'error': 'Admin access only'}, status=403)
+
+    tokens = ExpoPushToken.objects.select_related('user').exclude(
+        fcm_token__isnull=True
+    ).exclude(fcm_token='').order_by('-updated_at')
+
+    data = [
+        {
+            'id':           t.id,
+            'fcm_token':    t.fcm_token,
+            'expo_token':   t.token,
+            'device_type':  t.device_type or '',
+            'user_id':      t.user.id,
+            'username':     t.user.username,
+            'business_name': t.user.business_name or '',
+            'phone_number': t.user.phone_number or '',
+            'updated_at':   t.updated_at,
+        }
+        for t in tokens
+    ]
+    return Response({'count': len(data), 'tokens': data})
+
+
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def register_push_token(request):
@@ -2066,4 +2204,148 @@ def send_common_notification(request, pk):
     return Response({
         'message':             f'Notification sent to {sent_count} device(s).',
         'dead_tokens_cleaned': dead_count,
+    })
+
+# ===================== PDF INVOICES =====================
+
+from .models import PDFInvoice
+from .serializers import PDFInvoiceSerializer
+import boto3
+from botocore.config import Config
+from django.conf import settings
+import uuid as uuid_lib
+import os
+
+def _get_r2_client():
+    """Return a boto3 S3 client pointed at Cloudflare R2."""
+    return boto3.client(
+        's3',
+        endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        config=Config(signature_version='s3v4'),
+        region_name='auto',
+    )
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def upload_pdf_invoice(request):
+    """
+    POST /api/pdf-invoices/upload/
+    Called by an external sync system (Postman, script, etc.) to upload a PDF
+    invoice and assign it to a user identified by phone number.
+
+    No authentication required — open endpoint.
+
+    Form-data fields:
+      - file         (required) : PDF file, max 20 MB
+      - phone_number (required) : user's registered phone number
+      - title        (optional) : human-readable label e.g. "January Invoice"
+    """
+    # ── Resolve user by phone number ───────────────────────────────────────────
+    phone_number = (request.data.get('phone_number') or '').strip()
+    if not phone_number:
+        return Response(
+            {'error': 'phone_number is required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        target_user = User.objects.get(phone_number=phone_number)
+    except User.DoesNotExist:
+        return Response(
+            {'error': f'No user found with phone number {phone_number}.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = PDFInvoiceSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    pdf_file = serializer.validated_data['file']
+    title    = serializer.validated_data.get('title') or ''
+
+    # Build a unique R2 object key: pdf_invoices/<target_user_id>/<uuid>_<original_name>
+    safe_name  = pdf_file.name.replace(' ', '_')
+    object_key = f"pdf_invoices/{target_user.id}/{uuid_lib.uuid4().hex}_{safe_name}"
+
+    try:
+        r2 = _get_r2_client()
+        r2.upload_fileobj(
+            pdf_file,
+            settings.AWS_STORAGE_BUCKET_NAME,
+            object_key,
+            ExtraArgs={'ContentType': 'application/pdf'},
+        )
+    except Exception as e:
+        return Response(
+            {'error': f'R2 upload failed: {str(e)}'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    # Build the public URL using the R2 custom domain configured in settings
+    public_url = f"{settings.MEDIA_URL.rstrip('/')}/{object_key}"
+
+    invoice = PDFInvoice.objects.create(
+        user              = target_user,
+        title             = title or None,
+        original_filename = pdf_file.name,
+        file_url          = public_url,
+        file_key          = object_key,
+        file_size         = pdf_file.size,
+    )
+
+    return Response(
+        PDFInvoiceSerializer(invoice).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def list_pdf_invoices(request):
+    """
+    GET /api/pdf-invoices/
+    List PDF invoices for the authenticated user with pagination.
+
+    Query params:
+      - page      (default 1)
+      - page_size (default 10, max 100)
+
+    Response shape:
+      {
+        "total":       <int>,
+        "page":        <int>,
+        "page_size":   <int>,
+        "total_pages": <int>,
+        "results":     [ ... ]
+      }
+    """
+    try:
+        page      = max(1, int(request.query_params.get('page', 1)))
+        page_size = min(100, max(1, int(request.query_params.get('page_size', 10))))
+    except (ValueError, TypeError):
+        page      = 1
+        page_size = 10
+
+    qs    = PDFInvoice.objects.filter(user=request.user).order_by('-uploaded_at')
+    total = qs.count()
+
+    import math
+    total_pages = math.ceil(total / page_size) if total else 1
+
+    # Clamp page to valid range
+    page  = min(page, total_pages)
+    start = (page - 1) * page_size
+    end   = start + page_size
+
+    results = PDFInvoiceSerializer(qs[start:end], many=True).data
+
+    return Response({
+        'total':       total,
+        'page':        page,
+        'page_size':   page_size,
+        'total_pages': total_pages,
+        'results':     results,
     })

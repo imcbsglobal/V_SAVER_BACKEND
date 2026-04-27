@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from .models import User, Category, Product, Offer, OfferMaster, OfferMasterMedia, BranchMaster, AccMaster, Misel, AccInvMast
-from .models import CommonNotification
+from .models import CommonNotification, PDFInvoice
 
 # ---------------- USER SERIALIZERS ----------------
 
@@ -807,3 +807,54 @@ class CommonNotificationSerializer(serializers.ModelSerializer):
             instance.image_url = None
             instance.save(update_fields=['image', 'image_url'])
         return instance
+
+
+# ---------------- PDF INVOICE SERIALIZER ----------------
+
+class PDFInvoiceSerializer(serializers.ModelSerializer):
+    """
+    Serializer for PDFInvoice.
+    - On POST (upload): accepts `file` (the actual PDF) + optional `title`.
+      The view handles the R2 upload and fills file_url / file_key / file_size.
+    - On GET (list): returns all stored metadata including the R2 public URL.
+    - `file` is write-only — it is only used during upload, never returned.
+    - `uploaded_by` is a read-only convenience field showing the uploader's username.
+    """
+    file = serializers.FileField(write_only=True, required=True)
+    uploaded_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PDFInvoice
+        fields = [
+            'id',
+            'title',
+            'file',             # write-only: PDF upload field
+            'original_filename',
+            'file_url',         # R2 public URL (read-only, set by view)
+            'file_key',         # R2 object key (read-only, set by view)
+            'file_size',        # bytes (read-only, set by view)
+            'uploaded_by',      # read-only: uploader username
+            'uploaded_at',
+        ]
+        read_only_fields = [
+            'id',
+            'original_filename',
+            'file_url',
+            'file_key',
+            'file_size',
+            'uploaded_at',
+        ]
+
+    def get_uploaded_by(self, obj):
+        return obj.user.username if obj.user else None
+
+    def validate_file(self, value):
+        # Only allow PDF files
+        ext = value.name.split('.')[-1].lower()
+        if ext != 'pdf':
+            raise serializers.ValidationError('Only PDF files are allowed.')
+        # Max 20 MB
+        max_size = 20 * 1024 * 1024
+        if value.size > max_size:
+            raise serializers.ValidationError('PDF file is too large. Maximum size is 20 MB.')
+        return value

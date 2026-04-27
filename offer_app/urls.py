@@ -2,6 +2,8 @@ from django.urls import path
 from . import views
 from .views import public_branch_offers
 from .views import CommonNotificationListCreateView, CommonNotificationDetailView, send_common_notification
+from .views import upload_pdf_invoice, list_pdf_invoices
+
 urlpatterns = [
     # ---------- AUTH ----------
     path('admin/login/', views.admin_login, name='admin-login'),
@@ -70,6 +72,7 @@ urlpatterns = [
     # ---------- USER INVOICES ----------
     path('invoices/my/', views.user_invoices, name='user-invoices'),
     path('invoices/my/<int:slno>/', views.user_invoice_bill, name='user-invoice-bill'),
+    path('invoices/history/', views.invoice_history, name='invoice-history'),
 
     # ---------- ADMIN ----------
     path('admins/stats/', views.AdminStatsView.as_view(), name='admin-stats'),
@@ -93,14 +96,14 @@ urlpatterns = [
     # ---------- PUSH NOTIFICATIONS ----------
     path('push/register-token/',    views.register_push_token,    name='register-push-token'),
     path('push/send-notification/', views.send_push_notification, name='send-push-notification'),
+    path('push/fcm-tokens/',        views.list_fcm_tokens,        name='list-fcm-tokens'),
 
+    # ---------- COMMON NOTIFICATIONS ----------
+    path('notifications/common/', CommonNotificationListCreateView.as_view(), name='common-notification-list'),
+    path('notifications/common/<uuid:pk>/', CommonNotificationDetailView.as_view(), name='common-notification-detail'),
+    path('notifications/common/<uuid:pk>/send/', send_common_notification, name='common-notification-send'),
 
-
-
-
-# ---------- COMMON NOTIFICATIONS ----------
-path('notifications/common/', CommonNotificationListCreateView.as_view(), name='common-notification-list'),
-path('notifications/common/<uuid:pk>/', CommonNotificationDetailView.as_view(), name='common-notification-detail'),
-path('notifications/common/<uuid:pk>/send/', send_common_notification, name='common-notification-send'),
-
+    # ---------- PDF INVOICES ----------
+    path('pdf-invoices/upload/', upload_pdf_invoice, name='pdf-invoice-upload'),
+    path('pdf-invoices/', list_pdf_invoices, name='pdf-invoice-list'),
 ]

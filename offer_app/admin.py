@@ -1,6 +1,10 @@
 from django.contrib import admin
-from .models import User, Category, Product, Offer, BranchMaster, OfferMaster, OfferMasterMedia, ExpoPushToken
-from .models import CommonNotification
+from .models import (
+    User, Category, Product, Offer, BranchMaster,
+    OfferMaster, OfferMasterMedia, ExpoPushToken,
+    CommonNotification, PDFInvoice
+)
+
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
@@ -55,11 +59,18 @@ class ExpoPushTokenAdmin(admin.ModelAdmin):
     search_fields = ('user__phone_number', 'token')
 
 
-
-
 @admin.register(CommonNotification)
 class CommonNotificationAdmin(admin.ModelAdmin):
     list_display = ('title', 'target', 'status', 'sent_count', 'scheduled_at', 'sent_at', 'created_by', 'created_at')
     list_filter = ('status', 'target')
     search_fields = ('title', 'body')
     readonly_fields = ('status', 'sent_at', 'sent_count', 'created_at', 'updated_at')
+
+
+# ---------- PDF Invoice ----------
+@admin.register(PDFInvoice)
+class PDFInvoiceAdmin(admin.ModelAdmin):
+    list_display = ('title', 'original_filename', 'user', 'file_size', 'uploaded_at')
+    list_filter = ('uploaded_at',)
+    search_fields = ('title', 'original_filename', 'user__username', 'user__shop_name')
+    readonly_fields = ('file_url', 'file_key', 'file_size', 'original_filename', 'uploaded_at')

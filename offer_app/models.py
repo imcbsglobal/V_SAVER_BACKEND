@@ -361,8 +361,8 @@ class AccInvMast(models.Model):
 
     def __str__(self):
         return f"Invoice {self.slno} | {self.customerid} | {self.client_id}"
-    
-# ---------- Expo Push Token ----------
+
+
 # ---------- Expo Push Token ----------
 class ExpoPushToken(models.Model):
     user        = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_tokens')
@@ -374,7 +374,35 @@ class ExpoPushToken(models.Model):
     updated_at  = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.user} - {self.device_type} - {self.token[:20]}" 
+        return f"{self.user} - {self.device_type} - {self.token[:20]}"
+
+
+# ---------- PDF Invoice ----------
+class PDFInvoice(models.Model):
+    """
+    Stores PDF invoices uploaded by users.
+    The actual file lives in Cloudflare R2; only the URL + metadata are saved here.
+    """
+    id                = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user              = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pdf_invoices')
+    title             = models.CharField(max_length=255, blank=True, null=True,
+                                         help_text="Optional label for this PDF")
+    original_filename = models.CharField(max_length=255, blank=True, null=True)
+    file_url          = models.URLField(max_length=1000,
+                                        help_text="Public R2 URL of the uploaded PDF")
+    file_key          = models.CharField(max_length=500,
+                                         help_text="R2 object key (path inside bucket)")
+    file_size         = models.PositiveBigIntegerField(null=True, blank=True,
+                                                        help_text="File size in bytes")
+    uploaded_at       = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering        = ['-uploaded_at']
+        verbose_name    = 'PDF Invoice'
+        verbose_name_plural = 'PDF Invoices'
+
+    def __str__(self):
+        return f"{self.title or self.original_filename} - {self.user.username}"
 
 
 # ---------- File Deletion Signals ----------
@@ -406,7 +434,7 @@ def auto_delete_file_on_change(sender, instance, **kwargs):
         return
     if not instance.pk:
         return
-    
+
     try:
         old_instance = sender.objects.get(pk=instance.pk)
     except sender.DoesNotExist:
@@ -420,7 +448,8 @@ def auto_delete_file_on_change(sender, instance, **kwargs):
                 try:
                     old_file.delete(save=False)
                 except Exception:
-                    pass 
+                    pass
+
 
 # ---------- Common Notification ----------
 class CommonNotification(models.Model):
@@ -446,13 +475,15 @@ class CommonNotification(models.Model):
         blank=True, null=True,
         help_text="Upload an image file (JPG/PNG/WebP, max 5 MB)"
     )
-    image_url = models.URLField(blank=True, null=True, help_text="Optional image URL to show in notification (used when no file is uploaded)")
-    target = models.CharField(max_length=20, choices=TARGET_CHOICES, default='all')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
-    scheduled_at = models.DateTimeField(blank=True, null=True, help_text="Leave blank to send immediately")
-    sent_at = models.DateTimeField(blank=True, null=True)
-    sent_count = models.IntegerField(default=0, help_text="Number of tokens notified")
-    created_by = models.ForeignKey(
+    image_url    = models.URLField(blank=True, null=True,
+                                   help_text="Optional image URL to show in notification (used when no file is uploaded)")
+    target       = models.CharField(max_length=20, choices=TARGET_CHOICES, default='all')
+    status       = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    scheduled_at = models.DateTimeField(blank=True, null=True,
+                                        help_text="Leave blank to send immediately")
+    sent_at      = models.DateTimeField(blank=True, null=True)
+    sent_count   = models.IntegerField(default=0, help_text="Number of tokens notified")
+    created_by   = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='created_notifications'
     )
