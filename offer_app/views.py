@@ -2322,6 +2322,28 @@ def upload_pdf_invoice(request):
         file_size         = pdf_file.size,
     )
 
+    # ── Send push notification to the user's registered devices ──────────────
+    try:
+        user_tokens = list(
+            ExpoPushToken.objects.filter(user=target_user).values_list('token', flat=True)
+        )
+        if user_tokens:
+            notif_title = "🧾 New Invoice Available"
+            notif_body  = f"Your invoice '{invoice.title or invoice.original_filename}' has been uploaded."
+            _, dead_tokens = send_expo_push_notification(
+                user_tokens,
+                notif_title,
+                notif_body,
+                {'type': 'pdf_invoice', 'invoice_id': str(invoice.id)},
+            )
+            if dead_tokens:
+                ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+    except Exception as notif_err:
+        # Non-fatal — invoice upload still succeeds even if push fails
+        import logging
+        logging.getLogger(__name__).warning("[PDFInvoice] Push notification failed: %s", notif_err)
+    # ─────────────────────────────────────────────────────────────────────────
+
     return Response(
         PDFInvoiceSerializer(invoice).data,
         status=status.HTTP_201_CREATED,
