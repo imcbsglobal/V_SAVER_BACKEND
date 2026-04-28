@@ -819,9 +819,12 @@ class PDFInvoiceSerializer(serializers.ModelSerializer):
     - On GET (list): returns all stored metadata including the R2 public URL.
     - `file` is write-only — it is only used during upload, never returned.
     - `uploaded_by` is a read-only convenience field showing the uploader's username.
+    - `phone_number` is a read-only field echoing the customer's phone number
+      so external sync systems can confirm the PDF was assigned to the correct user.
     """
     file = serializers.FileField(write_only=True, required=True)
     uploaded_by = serializers.SerializerMethodField()
+    phone_number = serializers.SerializerMethodField()
 
     class Meta:
         model = PDFInvoice
@@ -833,7 +836,8 @@ class PDFInvoiceSerializer(serializers.ModelSerializer):
             'file_url',         # R2 public URL (read-only, set by view)
             'file_key',         # R2 object key (read-only, set by view)
             'file_size',        # bytes (read-only, set by view)
-            'uploaded_by',      # read-only: uploader username
+            'uploaded_by',      # read-only: uploader's username
+            'phone_number',     # read-only: customer's phone number (for sync confirmation)
             'uploaded_at',
         ]
         read_only_fields = [
@@ -848,13 +852,16 @@ class PDFInvoiceSerializer(serializers.ModelSerializer):
     def get_uploaded_by(self, obj):
         return obj.user.username if obj.user else None
 
+    def get_phone_number(self, obj):
+        return obj.user.phone_number if obj.user else None
+
     def validate_file(self, value):
         # Only allow PDF files
         ext = value.name.split('.')[-1].lower()
         if ext != 'pdf':
             raise serializers.ValidationError('Only PDF files are allowed.')
-        # Max 20 MB
-        max_size = 20 * 1024 * 1024
+        # Max 100 MB
+        max_size = 100 * 1024 * 1024
         if value.size > max_size:
-            raise serializers.ValidationError('PDF file is too large. Maximum size is 20 MB.')
+            raise serializers.ValidationError('PDF file is too large. Maximum size is 100 MB.')
         return value

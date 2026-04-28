@@ -2251,12 +2251,38 @@ def upload_pdf_invoice(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    try:
-        target_user = User.objects.get(phone_number=phone_number)
-    except User.DoesNotExist:
-        return Response(
-            {'error': f'No user found with phone number {phone_number}.'},
-            status=status.HTTP_404_NOT_FOUND,
+    # Normalise to last 10 digits to handle +91XXXXXXXXXX or 91XXXXXXXXXX
+    phone_number = phone_number[-10:]
+
+    # Step 1: Check User table first
+    target_user = User.objects.filter(phone_number__endswith=phone_number).first()
+
+    if not target_user:
+        # Step 2: Not in User table - check AccMaster (customers who haven't logged in yet)
+        debtor = _find_debtor_by_phone(phone_number)
+
+        if not debtor:
+            # Number doesn't exist anywhere in the system
+            return Response(
+                {'error': f'No user found with phone number {phone_number}.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Step 3: Auto-create User from AccMaster so PDF can be assigned now.
+        # When the customer eventually logs in, they will see their PDFs waiting.
+        debtor_code = (debtor.get('code') or '').strip()
+        debtor_name = (debtor.get('name') or '').strip()
+        place       = (debtor.get('place') or '').strip()
+
+        target_user, _ = User.objects.get_or_create(
+            phone_number=phone_number,
+            defaults={
+                'username':      f'debtor_{debtor_code}_{phone_number}',
+                'user_type':     'user',
+                'status':        'Active',
+                'business_name': debtor_name,
+                'location':      place,
+            }
         )
 
     serializer = PDFInvoiceSerializer(data=request.data)
