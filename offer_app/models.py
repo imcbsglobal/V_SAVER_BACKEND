@@ -365,13 +365,15 @@ class AccInvMast(models.Model):
 
 # ---------- Expo Push Token ----------
 class ExpoPushToken(models.Model):
-    user        = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_tokens')
-    token       = models.CharField(max_length=200, unique=True)
-    fcm_token   = models.CharField(max_length=512, blank=True, null=True,
-                                   help_text='FCM token — used only for CommonNotification')
-    device_type = models.CharField(max_length=20, blank=True, null=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
-    updated_at  = models.DateTimeField(auto_now=True)
+    user              = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_tokens')
+    token             = models.CharField(max_length=200, unique=True)
+    fcm_token         = models.CharField(max_length=512, blank=True, null=True,
+                                         help_text='FCM token — used only for CommonNotification (Android)')
+    apns_device_token = models.CharField(max_length=200, blank=True, null=True,
+                                         help_text='Raw APNs device token — used for iOS image notifications')
+    device_type       = models.CharField(max_length=20, blank=True, null=True)
+    created_at        = models.DateTimeField(auto_now_add=True)
+    updated_at        = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.user} - {self.device_type} - {self.token[:20]}"

@@ -2083,9 +2083,10 @@ def list_fcm_tokens(request):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def register_push_token(request):
-    token       = (request.data.get('token')       or '').strip()
-    fcm_token   = (request.data.get('fcm_token')   or '').strip()
-    device_type = (request.data.get('device_type') or '').strip()
+    token             = (request.data.get('token')             or '').strip()
+    fcm_token         = (request.data.get('fcm_token')         or '').strip()
+    apns_device_token = (request.data.get('apns_device_token') or '').strip()
+    device_type       = (request.data.get('device_type')       or '').strip()
 
     if not token:
         return Response({'error': 'token is required'}, status=400)
@@ -2093,6 +2094,8 @@ def register_push_token(request):
     defaults = {'user': request.user, 'device_type': device_type}
     if fcm_token:
         defaults['fcm_token'] = fcm_token
+    if apns_device_token:
+        defaults['apns_device_token'] = apns_device_token
 
     obj, created = ExpoPushToken.objects.update_or_create(
         token=token,
@@ -2123,7 +2126,7 @@ def _send_common_notification(notif, request=None):
     dead_token_count = 0
 
     if image_url:
-        # ── Has image → FCM V1 ──────────────────────────────────────────────
+        # ── Has image → FCM V1 (Android) ────────────────────────────────────
         fcm_tokens = list(
             token_qs.exclude(fcm_token__isnull=True)
                     .exclude(fcm_token='')
@@ -2137,6 +2140,22 @@ def _send_common_notification(notif, request=None):
             dead_token_count += len(fcm_dead)
             if fcm_dead:
                 ExpoPushToken.objects.filter(fcm_token__in=fcm_dead).delete()
+
+        # ── Has image → APNs direct (iOS) ───────────────────────────────────
+        from .apns_notifications import send_apns_notification
+        apns_tokens = list(
+            token_qs.exclude(apns_device_token__isnull=True)
+                    .exclude(apns_device_token='')
+                    .values_list('apns_device_token', flat=True)
+        )
+        if apns_tokens:
+            apns_sent, apns_dead = send_apns_notification(
+                apns_tokens, notif.title, notif.body, image_url
+            )
+            sent_count += apns_sent
+            dead_token_count += len(apns_dead)
+            if apns_dead:
+                ExpoPushToken.objects.filter(apns_device_token__in=apns_dead).update(apns_device_token='')
     else:
         # ── No image → Expo push (reaches all 10 devices) ───────────────────
         expo_tokens = list(token_qs.values_list('token', flat=True))

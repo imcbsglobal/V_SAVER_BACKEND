@@ -10,8 +10,8 @@ Django process — no separate worker or Redis needed).
 Started once from AppConfig.ready() so it survives server restarts.
 
 Notification routing:
-  • CommonNotification WITHOUT image → Expo push (works for all 10 devices)
-  • CommonNotification WITH image    → FCM V1 (requires fcm_token in DB)
+  • CommonNotification WITHOUT image → Expo push (works for all devices)
+  • CommonNotification WITH image    → FCM V1 (Android) + APNs direct (iOS)
   • OfferMaster push notifications   → Expo push (unchanged)
 """
 
@@ -65,21 +65,37 @@ def _fire_due_notifications():
             dead_tokens = []
 
             if image_url:
-                # ── Has image → FCM V1 ──────────────────────────────────────
+                # ── Has image → FCM V1 (Android) ────────────────────────────
                 fcm_tokens = list(
                     token_qs.exclude(fcm_token__isnull=True)
                             .exclude(fcm_token='')
                             .values_list('fcm_token', flat=True)
                 )
                 if fcm_tokens:
-                    sent_count, dead_tokens = send_fcm_notification_with_image(
+                    fcm_sent, fcm_dead = send_fcm_notification_with_image(
                         fcm_tokens, notif.title, notif.body, image_url
                     )
-                    if dead_tokens:
-                        ExpoPushToken.objects.filter(fcm_token__in=dead_tokens).delete()
+                    sent_count += fcm_sent
+                    if fcm_dead:
+                        ExpoPushToken.objects.filter(fcm_token__in=fcm_dead).delete()
+
+                # ── Has image → APNs direct (iOS) ────────────────────────────
+                from .apns_notifications import send_apns_notification
+                apns_tokens = list(
+                    token_qs.exclude(apns_device_token__isnull=True)
+                            .exclude(apns_device_token='')
+                            .values_list('apns_device_token', flat=True)
+                )
+                if apns_tokens:
+                    apns_sent, apns_dead = send_apns_notification(
+                        apns_tokens, notif.title, notif.body, image_url
+                    )
+                    sent_count += apns_sent
+                    if apns_dead:
+                        ExpoPushToken.objects.filter(apns_device_token__in=apns_dead).update(apns_device_token='')
 
                 logger.info(
-                    "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM.",
+                    "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM+APNs.",
                     notif.title, notif.id, sent_count,
                 )
 
