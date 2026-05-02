@@ -110,6 +110,54 @@ def _fire_due_notifications():
             )
 
 
+def _build_offer_notification(offer):
+    """
+    Build push notification title + body for an OfferMaster.
+
+    - Regular offer → standard title/body
+    - Hourly offer  → ⏰ flash label in title, time remaining in body
+                      e.g. "⏰ Flash Offer: Summer Sale"
+                           "Hurry! Valid for next 2h 30m only (ends at 05:00 PM)"
+                      If description exists it is prepended:
+                           "Big discounts!\n⏰ Ends in 2h 30m (at 05:00 PM)"
+    """
+    from datetime import datetime, date as dt_date
+    from django.utils.timezone import localtime
+
+    notif_title = f"🛍️ New Offer: {offer.title}"
+    notif_body  = offer.description or "Check out the latest offer now!"
+
+    if offer.offer_end_time:
+        now_ist  = localtime()
+        now_time = now_ist.time().replace(second=0, microsecond=0)
+
+        end_dt = datetime.combine(dt_date.today(), offer.offer_end_time)
+        now_dt = datetime.combine(dt_date.today(), now_time)
+        diff_seconds = (end_dt - now_dt).total_seconds()
+
+        if diff_seconds > 0:
+            total_minutes = int(diff_seconds / 60)
+            hours   = total_minutes // 60
+            minutes = total_minutes % 60
+
+            end_time_str = offer.offer_end_time.strftime("%I:%M %p")
+
+            if hours > 0 and minutes > 0:
+                timer_str = f"{hours}h {minutes}m"
+            elif hours > 0:
+                timer_str = f"{hours}h"
+            else:
+                timer_str = f"{minutes}m"
+
+            notif_title = f"⏰ Flash Offer: {offer.title}"
+            if offer.description:
+                notif_body = f"{offer.description}\n⏰ Ends in {timer_str} (at {end_time_str})"
+            else:
+                notif_body = f"Hurry! Valid for next {timer_str} only (ends at {end_time_str})"
+
+    return notif_title, notif_body
+
+
 def _activate_scheduled_offers():
     """
     Called every 60 seconds by APScheduler.
@@ -152,11 +200,10 @@ def _activate_scheduled_offers():
                 offer.title, offer.id,
             )
 
-            # Send push notification via Expo (unchanged)
+            # Send push notification via Expo with timer info for hourly offers
             tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
             if tokens:
-                notif_title = f"🛍️ New Offer: {offer.title}"
-                notif_body  = offer.description or "Check out the latest offer now!"
+                notif_title, notif_body = _build_offer_notification(offer)
                 _, dead_tokens = send_expo_push_notification(
                     tokens,
                     notif_title,
