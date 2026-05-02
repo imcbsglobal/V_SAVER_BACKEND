@@ -2091,6 +2091,12 @@ def register_push_token(request):
     if not token:
         return Response({'error': 'token is required'}, status=400)
 
+    # Auto-detect APNs token sent in wrong field by iOS app
+    if fcm_token and len(fcm_token) == 64 and fcm_token.isalnum() and ':' not in fcm_token:
+        apns_device_token = fcm_token
+        fcm_token = ''
+        device_type = 'ios'
+
     defaults = {'user': request.user, 'device_type': device_type}
     if fcm_token:
         defaults['fcm_token'] = fcm_token
