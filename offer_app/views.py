@@ -745,7 +745,9 @@ class OfferMasterListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         auto_expire_offers()
-        return OfferMaster.objects.all().prefetch_related('branches', 'media_files').order_by('-created_at')
+        # Order by -updated_at so that reactivated (inactive → active) offers
+        # surface to the top immediately, just like newly created offers do.
+        return OfferMaster.objects.all().prefetch_related('branches', 'media_files').order_by('-updated_at')
 
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -831,7 +833,8 @@ class OfferMasterDetailView(generics.RetrieveUpdateDestroyAPIView):
         if request.user.user_type != 'admin':
             return Response({"error": "Only administrators can update offers"}, status=status.HTTP_403_FORBIDDEN)
         try:
-            instance   = self.get_object()
+            instance        = self.get_object()
+            previous_status = instance.status          # ← capture BEFORE save
             files      = request.FILES.getlist('files')
             branch_ids = request.data.getlist('branch_ids')
             data = {
@@ -852,7 +855,35 @@ class OfferMasterDetailView(generics.RetrieveUpdateDestroyAPIView):
             serializer = self.get_serializer(instance, data=data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
+            instance.refresh_from_db()
             response_serializer = OfferMasterSerializer(instance, context={'request': request})
+
+            # ── Send push notification when an offer is reactivated ──────────
+            # Fires only when:  previous status was NOT 'active'
+            #               AND new status IS 'active'
+            # This covers the inactive → active case (manual reactivation via edit).
+            if previous_status != 'active' and instance.status == 'active':
+                try:
+                    tokens = list(ExpoPushToken.objects.values_list('token', flat=True))
+                    if tokens:
+                        notif_title = f"🛍️ Offer Available: {instance.title}"
+                        notif_body  = instance.description or "Check out this offer now!"
+                        _, dead_tokens = send_expo_push_notification(
+                            tokens,
+                            notif_title,
+                            notif_body,
+                            {
+                                'type':            'new_offer',
+                                'offer_master_id': str(instance.id),
+                            }
+                        )
+                        if dead_tokens:
+                            ExpoPushToken.objects.filter(token__in=dead_tokens).delete()
+                        print(f"[OfferMaster] Reactivation push sent to {len(tokens)} device(s) for '{instance.title}'")
+                except Exception as notif_err:
+                    # Non-fatal — offer update still succeeds even if push fails
+                    print(f"[OfferMaster] Reactivation push notification failed (non-fatal): {notif_err}")
+
             return Response(response_serializer.data)
         except OfferMaster.DoesNotExist:
             return Response({"error": "Offer not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -937,7 +968,7 @@ def get_branch_offers(request, branch_id):
     except BranchMaster.DoesNotExist:
         return Response({'success': False, 'error': 'Branch not found or you do not have access'}, status=status.HTTP_404_NOT_FOUND)
     try:
-        offers            = branch.offers.filter(status='active').order_by('-created_at')
+        offers            = branch.offers.filter(status='active').order_by('-updated_at')
         branch_serializer = BranchMasterSerializer(branch, context={'request': request})
         offers_serializer = OfferMasterSerializer(offers, many=True, context={'request': request})
         return Response({'success': True, 'branch': branch_serializer.data, 'offers_count': offers.count(), 'offers': offers_serializer.data})
@@ -990,7 +1021,9 @@ def discover_offers(request):
             offers = offers.filter(branches__location__icontains=location)
         elif city:
             offers = offers.filter(branches__city__icontains=city)
-        offers     = offers.distinct().order_by('-created_at')
+        # Sort by -updated_at so reactivated offers surface to the top immediately.
+        # (updated_at is bumped by auto_now=True on every save, including reactivation)
+        offers     = offers.distinct().order_by('-updated_at')
         serializer = OfferMasterSerializer(offers, many=True, context={'request': request})
         return Response({'success': True, 'count': offers.count(), 'offers': serializer.data})
     except Exception as e:

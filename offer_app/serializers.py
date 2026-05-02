@@ -634,10 +634,12 @@ class BranchWithOffersSerializer(serializers.ModelSerializer):
         today    = now_ist.date()
         now_time = now_ist.time().replace(second=0, microsecond=0)
 
+        # Order by -updated_at so reactivated offers surface to the top,
+        # matching the behaviour of discover_offers and the admin list.
         active_offers = obj.offers.filter(
             valid_from__lte=today,
             valid_to__gte=today,
-        ).exclude(status='inactive').prefetch_related('media_files')
+        ).exclude(status='inactive').prefetch_related('media_files').order_by('-updated_at')
 
         result = []
         for offer in active_offers:
