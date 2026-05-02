@@ -89,7 +89,7 @@ def send_apns_notification(device_tokens: list, title: str, body: str, image_url
 
     if image_url:
         apns_payload["aps"]["mutable-content"] = 1
-        apns_payload["imageUrl"] = image_url    # your Notification Service Extension reads this
+        apns_payload["body"] = {"imageUrl": image_url}  # ✅ NSE reads body.imageUrl
 
     try:
         with httpx.Client(http2=True, base_url=APNS_ENDPOINT, timeout=10) as client:
