@@ -1,8 +1,8 @@
 """
 offer_app/apns_notifications.py
 ────────────────────────────────
-Direct APNs HTTP/2 sender for iOS rich (image) notifications.
-Used ONLY when a CommonNotification has an image — for iOS devices.
+Direct APNs HTTP/2 sender for iOS notifications.
+Sends title and body only — no image (NSE not implemented in app).
 Android image notifications continue to use FCM (fcm_notifications.py) unchanged.
 
 Prerequisites:
@@ -57,14 +57,16 @@ def _get_jwt() -> str:
 
 def send_apns_notification(device_tokens: list, title: str, body: str, image_url: str = None) -> tuple:
     """
-    Send a notification directly to APNs for iOS devices.
+    Send a plain notification to iOS devices via APNs.
+    image_url is accepted but ignored — iOS app has no NSE to display images.
+    Android image notifications are handled separately via FCM.
 
     Parameters
     ----------
     device_tokens : list[str]   Raw APNs device tokens (hex string, 64 chars)
     title         : str
     body          : str
-    image_url     : str | None  Image URL — triggers mutable-content for NSE
+    image_url     : str | None  Ignored on iOS — no NSE in app
 
     Returns
     -------
@@ -76,6 +78,8 @@ def send_apns_notification(device_tokens: list, title: str, body: str, image_url
     sent_count  = 0
     dead_tokens = []
 
+    # ✅ Plain notification only — title and body, no image
+    # Image is intentionally not included — NSE is not implemented in the iOS app
     apns_payload = {
         "aps": {
             "alert": {
@@ -86,10 +90,6 @@ def send_apns_notification(device_tokens: list, title: str, body: str, image_url
             "badge": 1,
         }
     }
-
-    if image_url:
-        apns_payload["aps"]["mutable-content"] = 1
-        apns_payload["body"] = {"imageUrl": image_url}  # ✅ NSE reads body.imageUrl
 
     try:
         with httpx.Client(http2=True, base_url=APNS_ENDPOINT, timeout=10) as client:
@@ -130,7 +130,7 @@ def send_apns_notification(device_tokens: list, title: str, body: str, image_url
         logger.exception("[APNs] Client setup error: %s", exc)
 
     logger.info(
-        "[APNs] Sent=%d  Dead=%d  Image=%s",
-        sent_count, len(dead_tokens), "yes" if image_url else "no"
+        "[APNs] Sent=%d  Dead=%d",
+        sent_count, len(dead_tokens)
     )
     return sent_count, dead_tokens
