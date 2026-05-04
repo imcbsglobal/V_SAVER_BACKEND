@@ -12,6 +12,8 @@ Started once from AppConfig.ready() so it survives server restarts.
 Notification routing:
   • CommonNotification WITHOUT image → Expo push (works for all devices)
   • CommonNotification WITH image    → FCM V1 (Android) + APNs direct (iOS)
+                                       + Expo text-only fallback for iOS devices
+                                         that have no apns_device_token
   • OfferMaster push notifications   → Expo push (unchanged)
 """
 
@@ -29,7 +31,8 @@ def _fire_due_notifications():
       - scheduled_at <= now
     and sends it:
       - No image → Expo push (reaches all devices)
-      - With image → FCM V1 (reaches devices with fcm_token)
+      - With image → FCM V1 (Android) + APNs direct (iOS with apns_device_token)
+                     + Expo text-only fallback (iOS with Expo token but no apns_device_token)
     """
     from .models import CommonNotification, ExpoPushToken
     from .fcm_notifications import send_fcm_notification_with_image
@@ -94,8 +97,39 @@ def _fire_due_notifications():
                     if apns_dead:
                         ExpoPushToken.objects.filter(apns_device_token__in=apns_dead).update(apns_device_token='')
 
+                # ── Has image → Expo fallback (any device with no FCM token AND no apns_device_token) ──
+                # Catches iOS devices that only have an Expo token — regardless of device_type stored.
+                # They are skipped by FCM (no fcm_token) and APNs (no apns_device_token) paths above.
+                # Send title + body via Expo so they are never silently dropped.
+                expo_fallback_tokens = list(
+                    token_qs.filter(apns_device_token__isnull=True)
+                            .filter(fcm_token__isnull=True)
+                            .exclude(token='')
+                            .values_list('token', flat=True)
+                )
+                expo_fallback_tokens_empty = list(
+                    token_qs.filter(apns_device_token='')
+                            .filter(fcm_token='')
+                            .exclude(token='')
+                            .values_list('token', flat=True)
+                )
+                expo_fallback_tokens = list(set(expo_fallback_tokens + expo_fallback_tokens_empty))
+
+                if expo_fallback_tokens:
+                    _, expo_dead = send_expo_push_notification(
+                        expo_fallback_tokens, notif.title, notif.body, {}
+                    )
+                    if expo_dead:
+                        ExpoPushToken.objects.filter(token__in=expo_dead).delete()
+                    expo_fallback_sent = len(expo_fallback_tokens) - len(expo_dead)
+                    sent_count += expo_fallback_sent
+                    logger.info(
+                        "[Scheduler] Expo text-only fallback sent to %d device(s) (no apns/fcm token) for '%s'.",
+                        expo_fallback_sent, notif.title,
+                    )
+
                 logger.info(
-                    "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM+APNs.",
+                    "[Scheduler] Sent scheduled notification '%s' (id=%s) to %d device(s) via FCM+APNs+ExpoFallback.",
                     notif.title, notif.id, sent_count,
                 )
 

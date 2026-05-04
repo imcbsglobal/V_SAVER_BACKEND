@@ -2162,6 +2162,35 @@ def _send_common_notification(notif, request=None):
             dead_token_count += len(apns_dead)
             if apns_dead:
                 ExpoPushToken.objects.filter(apns_device_token__in=apns_dead).update(apns_device_token='')
+
+        # ── Has image → Expo fallback (any device with no FCM token AND no apns_device_token) ──
+        # This catches iOS devices that only registered an Expo token (no apns_device_token,
+        # no fcm_token) — regardless of what device_type is stored.
+        # They are skipped by both FCM and APNs paths above, so we send title + body
+        # via Expo so they are never silently dropped.
+        expo_fallback_tokens = list(
+            token_qs.filter(apns_device_token__isnull=True)
+                    .filter(fcm_token__isnull=True)
+                    .exclude(token='')
+                    .values_list('token', flat=True)
+        )
+        # Also include devices where apns_device_token='' or fcm_token=''
+        expo_fallback_tokens_empty = list(
+            token_qs.filter(apns_device_token='')
+                    .filter(fcm_token='')
+                    .exclude(token='')
+                    .values_list('token', flat=True)
+        )
+        expo_fallback_tokens = list(set(expo_fallback_tokens + expo_fallback_tokens_empty))
+
+        if expo_fallback_tokens:
+            _, expo_dead = send_expo_push_notification(
+                expo_fallback_tokens, notif.title, notif.body, {}
+            )
+            if expo_dead:
+                ExpoPushToken.objects.filter(token__in=expo_dead).delete()
+            sent_count += len(expo_fallback_tokens) - len(expo_dead)
+            dead_token_count += len(expo_dead)
     else:
         # ── No image → Expo push (reaches all 10 devices) ───────────────────
         expo_tokens = list(token_qs.values_list('token', flat=True))
