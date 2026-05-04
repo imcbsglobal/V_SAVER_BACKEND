@@ -2147,49 +2147,21 @@ def _send_common_notification(notif, request=None):
             if fcm_dead:
                 ExpoPushToken.objects.filter(fcm_token__in=fcm_dead).delete()
 
-        # ── Has image → APNs direct (iOS) ───────────────────────────────────
-        from .apns_notifications import send_apns_notification
-        apns_tokens = list(
-            token_qs.exclude(apns_device_token__isnull=True)
-                    .exclude(apns_device_token='')
-                    .values_list('apns_device_token', flat=True)
-        )
-        if apns_tokens:
-            apns_sent, apns_dead = send_apns_notification(
-                apns_tokens, notif.title, notif.body, image_url
-            )
-            sent_count += apns_sent
-            dead_token_count += len(apns_dead)
-            if apns_dead:
-                ExpoPushToken.objects.filter(apns_device_token__in=apns_dead).update(apns_device_token='')
-
-        # ── Has image → Expo fallback (any device with no FCM token AND no apns_device_token) ──
-        # This catches iOS devices that only registered an Expo token (no apns_device_token,
-        # no fcm_token) — regardless of what device_type is stored.
-        # They are skipped by both FCM and APNs paths above, so we send title + body
-        # via Expo so they are never silently dropped.
-        expo_fallback_tokens = list(
-            token_qs.filter(apns_device_token__isnull=True)
-                    .filter(fcm_token__isnull=True)
-                    .exclude(token='')
-                    .values_list('token', flat=True)
-        )
-        # Also include devices where apns_device_token='' or fcm_token=''
-        expo_fallback_tokens_empty = list(
-            token_qs.filter(apns_device_token='')
-                    .filter(fcm_token='')
-                    .exclude(token='')
-                    .values_list('token', flat=True)
-        )
-        expo_fallback_tokens = list(set(expo_fallback_tokens + expo_fallback_tokens_empty))
-
-        if expo_fallback_tokens:
+        # ── Has image → Expo (iOS + all non-Android devices, title+body only) ──
+        # Android gets image via FCM above.
+        # iOS has no NSE so image cannot be shown natively via APNs.
+        # All devices without an fcm_token go through Expo (title+body only).
+        ios_expo_tokens = list(set(
+            list(token_qs.filter(fcm_token__isnull=True).exclude(token='').values_list('token', flat=True)) +
+            list(token_qs.filter(fcm_token='').exclude(token='').values_list('token', flat=True))
+        ))
+        if ios_expo_tokens:
             _, expo_dead = send_expo_push_notification(
-                expo_fallback_tokens, notif.title, notif.body, {}
+                ios_expo_tokens, notif.title, notif.body, {}
             )
             if expo_dead:
                 ExpoPushToken.objects.filter(token__in=expo_dead).delete()
-            sent_count += len(expo_fallback_tokens) - len(expo_dead)
+            sent_count += len(ios_expo_tokens) - len(expo_dead)
             dead_token_count += len(expo_dead)
     else:
         # ── No image → Expo push (reaches all 10 devices) ───────────────────
