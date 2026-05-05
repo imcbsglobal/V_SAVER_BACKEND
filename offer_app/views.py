@@ -2502,3 +2502,83 @@ def list_pdf_invoices(request):
         'total_pages': total_pages,
         'results':     results,
     })
+
+# ===========================================================================
+# BANNER IMAGES
+# ===========================================================================
+from .models import BannerImage
+from .serializers import BannerImageSerializer
+
+
+# ---------------------------------------------------------------------------
+# Admin: GET /api/banners/        → list all banners
+# Admin: POST /api/banners/       → upload new banner
+# ---------------------------------------------------------------------------
+@api_view(['GET', 'POST'])
+@permission_classes([IsAdminUser])
+def banner_list_create(request):
+    """
+    GET  → returns all banners ordered by 'order' ASC (admin sees active + inactive)
+    POST → upload a new banner via multipart/form-data
+           Required field : image
+           Optional fields: title, link_url, order, is_active
+    """
+    if request.method == 'GET':
+        banners = BannerImage.objects.all()
+        serializer = BannerImageSerializer(banners, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    # POST
+    serializer = BannerImageSerializer(data=request.data, context={'request': request})
+    if serializer.is_valid():
+        serializer.save(created_by=request.user, is_active=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Admin: PATCH /api/banners/<uuid>/   → update (toggle is_active, reorder, swap image)
+# Admin: DELETE /api/banners/<uuid>/  → delete banner + image file
+# ---------------------------------------------------------------------------
+@api_view(['GET', 'PATCH', 'PUT', 'DELETE'])
+@permission_classes([IsAdminUser])
+def banner_detail(request, pk):
+    """
+    PATCH  → partial update — frontend sends is_active or order via FormData
+    DELETE → delete banner; image file is cleaned up by existing model signals
+    """
+    try:
+        banner = BannerImage.objects.get(pk=pk)
+    except BannerImage.DoesNotExist:
+        return Response({'error': 'Banner not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'DELETE':
+        banner.delete()
+        return Response({'message': 'Banner deleted successfully.'}, status=status.HTTP_200_OK)
+
+    if request.method == 'GET':
+        return Response(BannerImageSerializer(banner, context={'request': request}).data)
+
+    # PATCH / PUT — partial=True so frontend can send only 'is_active' or only 'order'
+    serializer = BannerImageSerializer(
+        banner, data=request.data, partial=True, context={'request': request}
+    )
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Public (mobile app): GET /api/public/banners/  → active banners only
+# ---------------------------------------------------------------------------
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def public_list_banners(request):
+    """
+    No auth required.
+    Returns only is_active=True banners ordered by 'order' ASC.
+    """
+    banners = BannerImage.objects.filter(is_active=True)
+    serializer = BannerImageSerializer(banners, many=True, context={'request': request})
+    return Response(serializer.data)

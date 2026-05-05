@@ -407,6 +407,37 @@ class PDFInvoice(models.Model):
         return f"{self.title or self.original_filename} - {self.user.username}"
 
 
+# ---------- Banner Image ----------
+class BannerImage(models.Model):
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    image      = models.ImageField(upload_to='banner_images/')
+    title      = models.CharField(max_length=255, blank=True, null=True)
+    link_url   = models.URLField(max_length=1000, blank=True, null=True)
+    order      = models.IntegerField(default=0)
+    is_active  = models.BooleanField(default=True)
+    # Banners are only deleted when the admin explicitly deletes them.
+    # expires_at is kept for backward compatibility but defaults to None (no auto-expiry).
+    expires_at = models.DateTimeField(
+        default=None,
+        null=True, blank=True,
+        help_text="Unused — banners are only deleted when admin deletes them manually."
+    )
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='uploaded_banners'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['order', '-created_at']
+        verbose_name = 'Banner Image'
+        verbose_name_plural = 'Banner Images'
+
+    def __str__(self):
+        return self.title or f"Banner {self.id}"
+
+
 # ---------- File Deletion Signals ----------
 from django.db.models.signals import post_delete, pre_save
 from django.dispatch import receiver

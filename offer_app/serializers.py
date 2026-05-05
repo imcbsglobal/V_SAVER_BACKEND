@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from .models import User, Category, Product, Offer, OfferMaster, OfferMasterMedia, BranchMaster, AccMaster, Misel, AccInvMast
-from .models import CommonNotification, PDFInvoice
+from .models import CommonNotification, PDFInvoice, BannerImage
 
 # ---------------- USER SERIALIZERS ----------------
 
@@ -866,4 +866,48 @@ class PDFInvoiceSerializer(serializers.ModelSerializer):
         max_size = 100 * 1024 * 1024
         if value.size > max_size:
             raise serializers.ValidationError('PDF file is too large. Maximum size is 100 MB.')
+        return value
+
+# ---------------- BANNER IMAGE SERIALIZER ----------------
+
+class BannerImageSerializer(serializers.ModelSerializer):
+    """
+    Matches the frontend exactly:
+      - is_active  (boolean)  ← frontend reads/writes this
+      - image_url  (absolute) ← frontend loads image from this
+    """
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BannerImage
+        fields = [
+            'id',
+            'title',
+            'image',        # write-only upload
+            'image_url',    # read-only absolute URL
+            'link_url',
+            'order',
+            'is_active',
+            'expires_at',   # nullable; auto-set to 24h from upload; admin can extend/clear
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'image_url']
+
+    def get_image_url(self, obj):
+        if obj.image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
+        return None
+
+    def validate_image(self, value):
+        max_size = 10 * 1024 * 1024  # 10 MB — matches frontend limit
+        if value.size > max_size:
+            raise serializers.ValidationError('Image must be smaller than 10 MB.')
+        allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif']
+        ext = value.name.split('.')[-1].lower()
+        if ext not in allowed_extensions:
+            raise serializers.ValidationError('Unsupported format. Use JPG, PNG, WebP, GIF, or AVIF.')
         return value

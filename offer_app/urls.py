@@ -3,6 +3,7 @@ from . import views
 from .views import public_branch_offers
 from .views import CommonNotificationListCreateView, CommonNotificationDetailView, send_common_notification
 from .views import upload_pdf_invoice, list_pdf_invoices
+from .views import banner_list_create, banner_detail, public_list_banners
 
 urlpatterns = [
     # ---------- AUTH ----------
@@ -106,5 +107,10 @@ urlpatterns = [
     # ---------- PDF INVOICES ----------
     path('pdf-invoices/upload/', upload_pdf_invoice, name='pdf-invoice-upload'),
     path('pdf-invoices/', list_pdf_invoices, name='pdf-invoice-list'),
+
+    # ---------- BANNER IMAGES ----------
+    path('banners/', banner_list_create, name='banner-list-create'),
+    path('banners/<uuid:pk>/', banner_detail, name='banner-detail'),
+    path('public/banners/', public_list_banners, name='public-banners'),
     
 ]

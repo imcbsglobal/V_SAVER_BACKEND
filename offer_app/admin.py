@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     User, Category, Product, Offer, BranchMaster,
     OfferMaster, OfferMasterMedia, ExpoPushToken,
-    CommonNotification, PDFInvoice
+    CommonNotification, PDFInvoice, BannerImage
 )
 
 
@@ -74,3 +74,12 @@ class PDFInvoiceAdmin(admin.ModelAdmin):
     list_filter = ('uploaded_at',)
     search_fields = ('title', 'original_filename', 'user__username', 'user__shop_name')
     readonly_fields = ('file_url', 'file_key', 'file_size', 'original_filename', 'uploaded_at')
+
+# ---------- Banner Image ----------
+@admin.register(BannerImage)
+class BannerImageAdmin(admin.ModelAdmin):
+    list_display = ('title', 'is_active', 'order', 'expires_at', 'created_by', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('title',)
+    readonly_fields = ('created_at', 'updated_at', 'created_by')
+    ordering = ('order', '-created_at')

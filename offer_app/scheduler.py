@@ -252,6 +252,7 @@ def _activate_scheduled_offers():
             )
 
 
+
 def _cleanup_old_notifications():
     """
     Called once every 24 hours by APScheduler.
